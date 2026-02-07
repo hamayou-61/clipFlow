@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:alistapart.com)",
+      "WebFetch(domain:sevendex.com)",
+      "WebFetch(domain:zenn.dev)",
+      "Bash(npm run build:*)",
+      "Bash(npm install)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite:*)",
+      "Bash(timeout:*)",
+      "Bash(ping:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npm install:*)"
+    ]
+  }
+}
