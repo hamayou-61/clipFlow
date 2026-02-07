@@ -13,7 +13,7 @@ export function Header() {
   return (
     <header className="flex items-center justify-between px-6 py-3 bg-editor-surface border-b border-editor-border">
       <h1 className="text-lg font-semibold text-white">
-        Split Video Editor
+        ClipFlow
       </h1>
 
       <div className="flex items-center gap-6">

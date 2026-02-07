@@ -1,5 +1,5 @@
 {
-  "name": "split-video-editor",
+  "name": "clipflow",
   "version": "1.0.0",
   "description": "スプリット動画合成デスクトップアプリ",
   "main": "dist-electron/main.js",
@@ -36,8 +36,8 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.splitvideoeditor.app",
-    "productName": "Split Video Editor",
+    "appId": "com.clipflow.app",
+    "productName": "ClipFlow",
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
