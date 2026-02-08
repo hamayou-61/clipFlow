@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useMemo, useRef, DragEvent } from 'react'
+import React, { useCallback, useState, useEffect, useMemo, useRef, DragEvent } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime, generateId, parseTime, clamp, snapToGrid } from '../utils/format'
 import type { LayoutType, Segment, Clip, LaneId } from '../types'
@@ -807,8 +807,8 @@ export function SegmentPanel() {
       {/* Segment Tabs */}
       <div className="flex items-center gap-1 px-4 pt-2 overflow-x-auto">
         {segments.map((seg, index) => (
+          <React.Fragment key={seg.id}>
           <button
-            key={seg.id}
             draggable
             onClick={() => selectSegment(seg.id)}
             onDragStart={(e) => {
@@ -847,7 +847,7 @@ export function SegmentPanel() {
                 ? 'bg-editor-accent/30 text-white'
                 : selectedSegmentId === seg.id
                 ? 'bg-editor-bg text-white'
-                : 'text-gray-500 hover:text-gray-300 bg-editor-surface hover:bg-editor-bg/50'
+                : 'text-gray-500 hover:text-gray-300 bg-editor-surface hover:bg-editor-bg/50 border border-b-0 border-editor-border'
             }`}
           >
             <span className="w-5 h-5 flex items-center justify-center bg-gray-600 rounded text-xs text-white">{index + 1}</span>
@@ -855,10 +855,23 @@ export function SegmentPanel() {
               {seg.layoutType === 'single-main' ? 'メイン' : seg.layoutType === 'split-h' ? '左右' : seg.layoutType === 'split-v' ? '上下' : 'ワイプ'}
             </span>
             <span className="text-xs text-gray-500">{getSegmentDuration(seg) > 0 ? formatTime(getSegmentDuration(seg)) : '--:--'}</span>
-            {index < segments.length - 1 && (
-              <span className="text-gray-600 ml-1">→</span>
-            )}
+            <span
+              onClick={(e) => {
+                e.stopPropagation()
+                removeSegment(seg.id)
+              }}
+              className="ml-1 text-gray-600 hover:text-red-400 transition-colors cursor-pointer"
+              title="セグメントを削除"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </span>
           </button>
+          {index < segments.length - 1 && (
+            <span className="text-gray-600 text-sm">→</span>
+          )}
+        </React.Fragment>
         ))}
         <button
           onClick={handleAddSegment}

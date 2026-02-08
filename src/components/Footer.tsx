@@ -15,7 +15,7 @@ export function Footer() {
 
   return (
     <>
-      <footer className="flex items-center justify-between px-6 py-4 bg-editor-surface border-t border-editor-border">
+      <footer className="fixed bottom-0 left-0 right-0 z-50 flex items-center justify-between px-6 py-4 bg-editor-surface border-t border-editor-border">
         <div className="flex items-center gap-4">
           <span className="text-sm text-gray-400">出力尺:</span>
           <span className="text-lg font-mono text-white">

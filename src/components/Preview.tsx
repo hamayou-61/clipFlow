@@ -17,15 +17,6 @@ export function Preview() {
   const setAudioBalance = useEditorStore((state) => state.setAudioBalance)
   const setMainVolume = useEditorStore((state) => state.setMainVolume)
   const setSubVolume = useEditorStore((state) => state.setSubVolume)
-  const bgmFilePath = useEditorStore((state) => state.bgmFilePath)
-  const bgmFileName = useEditorStore((state) => state.bgmFileName)
-  const bgmVolume = useEditorStore((state) => state.bgmVolume)
-  const bgmFadeIn = useEditorStore((state) => state.bgmFadeIn)
-  const bgmFadeOut = useEditorStore((state) => state.bgmFadeOut)
-  const setBgm = useEditorStore((state) => state.setBgm)
-  const setBgmVolume = useEditorStore((state) => state.setBgmVolume)
-  const setBgmFadeIn = useEditorStore((state) => state.setBgmFadeIn)
-  const setBgmFadeOut = useEditorStore((state) => state.setBgmFadeOut)
 
   const mainVideoRef = useRef<HTMLVideoElement>(null)
   const subVideoRef = useRef<HTMLVideoElement>(null)
@@ -36,7 +27,6 @@ export function Preview() {
   const isDraggingRef = useRef(false)
   const prevSegmentIdRef = useRef<string | null>(null)
   const [showVolumeControls, setShowVolumeControls] = useState(false)
-  const [isBgmLoading, setIsBgmLoading] = useState(false)
 
   const duration = getOutputDuration()
   const currentSegment = getSegmentAtPosition(sliderValue)
@@ -231,27 +221,6 @@ export function Preview() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [togglePlay])
 
-  // BGM file selection
-  const handleSelectBgm = useCallback(async () => {
-    if (!window.electronAPI || isBgmLoading) return
-    setIsBgmLoading(true)
-    try {
-      const filePath = await window.electronAPI.openAudioFileDialog()
-      if (!filePath) return
-      const duration = await window.electronAPI.getAudioDuration(filePath)
-      const fileName = filePath.split(/[/\\]/).pop() || 'audio'
-      setBgm(filePath, fileName, duration)
-    } catch (error) {
-      console.error('Failed to load BGM:', error)
-    } finally {
-      setIsBgmLoading(false)
-    }
-  }, [isBgmLoading, setBgm])
-
-  const handleRemoveBgm = useCallback(() => {
-    setBgm(null, null, 0)
-  }, [setBgm])
-
   const hasSegments = segments.length > 0
   const layoutType = currentSegment?.layoutType || 'split-h'
   const isHorizontalOutput = aspectRatio === '16:9'
@@ -309,16 +278,6 @@ export function Preview() {
 
   return (
     <section className="p-6 bg-editor-surface border-b border-editor-border">
-      {/* Layout indicator */}
-      {currentSegment && (
-        <div className="text-center text-xs text-gray-500 mb-2">
-          レイアウト: {layoutType === 'split-h' ? '左右分割' :
-                      layoutType === 'split-v' ? '上下分割' :
-                      layoutType === 'pip' ? 'ワイプ' :
-                      layoutType === 'single-main' ? 'メインのみ' : 'サブのみ'}
-        </div>
-      )}
-
       {/* Preview Area */}
       <div className="flex justify-center mb-4">
         <div
@@ -429,85 +388,6 @@ export function Preview() {
         </span>
       </div>
 
-      {/* BGM - always visible */}
-      <div className="mt-3 max-w-3xl mx-auto">
-        <div className="flex items-center gap-3 text-xs">
-          <span className="text-gray-400 font-medium flex-shrink-0">BGM</span>
-          {bgmFileName ? (
-            <>
-              <span className="text-white truncate max-w-[120px]" title={bgmFileName}>{bgmFileName}</span>
-              <button
-                onClick={handleRemoveBgm}
-                className="text-gray-500 hover:text-red-400 transition-colors flex-shrink-0"
-                title="BGMを削除"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-              <input
-                type="range"
-                min={0}
-                max={2}
-                step={0.05}
-                value={bgmVolume}
-                onChange={(e) => setBgmVolume(parseFloat(e.target.value))}
-                className="flex-1 h-1.5 rounded-lg cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, #3b82f6 ${(bgmVolume / 2) * 100}%, #3a3a3a ${(bgmVolume / 2) * 100}%)`
-                }}
-              />
-              <span className="text-gray-400 w-10 text-right flex-shrink-0">{Math.round(bgmVolume * 100)}%</span>
-            </>
-          ) : (
-            <button
-              onClick={handleSelectBgm}
-              disabled={isBgmLoading}
-              className="px-2 py-1 text-xs bg-editor-surface border border-editor-border rounded hover:border-gray-500 text-gray-400 hover:text-white transition-colors disabled:opacity-50"
-            >
-              {isBgmLoading ? '読込中...' : 'ファイルを選択'}
-            </button>
-          )}
-        </div>
-
-        {/* BGM fade controls (only when file selected) */}
-        {bgmFilePath && (
-          <div className="flex items-center gap-4 mt-2 text-xs">
-            <div className="flex items-center gap-2 flex-1">
-              <span className="text-gray-500 flex-shrink-0">フェードイン</span>
-              <input
-                type="range"
-                min={0}
-                max={10}
-                step={0.5}
-                value={bgmFadeIn}
-                onChange={(e) => setBgmFadeIn(parseFloat(e.target.value))}
-                className="flex-1 h-1.5 rounded-lg cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, #3b82f6 ${(bgmFadeIn / 10) * 100}%, #3a3a3a ${(bgmFadeIn / 10) * 100}%)`
-                }}
-              />
-              <span className="text-gray-400 w-8 text-right">{bgmFadeIn.toFixed(1)}s</span>
-            </div>
-            <div className="flex items-center gap-2 flex-1">
-              <span className="text-gray-500 flex-shrink-0">フェードアウト</span>
-              <input
-                type="range"
-                min={0}
-                max={10}
-                step={0.5}
-                value={bgmFadeOut}
-                onChange={(e) => setBgmFadeOut(parseFloat(e.target.value))}
-                className="flex-1 h-1.5 rounded-lg cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, #3b82f6 ${(bgmFadeOut / 10) * 100}%, #3a3a3a ${(bgmFadeOut / 10) * 100}%)`
-                }}
-              />
-              <span className="text-gray-400 w-8 text-right">{bgmFadeOut.toFixed(1)}s</span>
-            </div>
-          </div>
-        )}
-      </div>
 
       {/* Volume Controls Toggle (accordion) */}
       {hasSegments && (

@@ -10,7 +10,7 @@ function App() {
       <Header />
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col">
+      <main className="flex-1 flex flex-col pb-16">
         {/* Preview Section */}
         <Preview />
 
