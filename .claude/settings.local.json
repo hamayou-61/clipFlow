@@ -12,7 +12,10 @@
       "Bash(ping:*)",
       "Bash(npm run dev:*)",
       "Bash(npm install:*)",
-      "Bash(npm run electron:dev:*)"
+      "Bash(npm run electron:dev:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npx vitest:*)",
+      "Bash(npm run check:all:*)"
     ]
   }
 }
