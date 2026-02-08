@@ -1,6 +1,61 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime } from '../utils/format'
+import type { LayoutType, Clip } from '../types'
+
+// Calculate target aspect ratio based on layout type
+function getTargetAspect(layoutType: LayoutType, isHorizontalOutput: boolean): number {
+  if (layoutType === 'single-main' || layoutType === 'pip') {
+    return isHorizontalOutput ? 16 / 9 : 9 / 16
+  } else if (layoutType === 'split-h') {
+    return isHorizontalOutput ? 8 / 9 : 9 / 32
+  } else { // split-v
+    return isHorizontalOutput ? 32 / 9 : 9 / 8
+  }
+}
+
+// Calculate video style for proper crop display
+// Returns CSS properties for positioning the video correctly within its container
+// Uses "contain" behavior at cropScale=1 (entire video visible), zoom crops at cropScale>1
+function getVideoStyle(clip: Clip, layoutType: LayoutType, isHorizontalOutput: boolean): React.CSSProperties {
+  const targetAspect = getTargetAspect(layoutType, isHorizontalOutput)
+  const sourceAspect = clip.width / clip.height
+  const cropScale = clip.cropScale ?? 1
+
+  // Calculate video dimensions using "contain" logic at base scale
+  // At cropScale=1, the entire video fits within the frame (may have letterbox/pillarbox)
+  // At cropScale>1, video is zoomed and may overflow the frame
+  let videoWidth: number // as percentage of container
+  let videoHeight: number // as percentage of container
+
+  if (sourceAspect > targetAspect) {
+    // Video is wider than target - fit width to container, height is smaller (letterbox)
+    videoWidth = cropScale * 100
+    videoHeight = cropScale * (targetAspect / sourceAspect) * 100
+  } else {
+    // Video is taller than target - fit height to container, width is smaller (pillarbox)
+    videoHeight = cropScale * 100
+    videoWidth = cropScale * (sourceAspect / targetAspect) * 100
+  }
+
+  // Calculate max offset - only possible when video exceeds container (cropScale > 1 or partial overflow)
+  const maxOffsetX = Math.max(0, (videoWidth - 100) / 200) // as fraction of container
+  const maxOffsetY = Math.max(0, (videoHeight - 100) / 200) // as fraction of container
+
+  // Convert crop position (-1 to 1) to actual offset percentage
+  const offsetX = -clip.cropX * maxOffsetX * 100
+  const offsetY = -clip.cropY * maxOffsetY * 100
+
+  return {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    width: `${videoWidth}%`,
+    height: `${videoHeight}%`,
+    transform: `translate(calc(-50% + ${offsetX}%), calc(-50% + ${offsetY}%))`,
+    objectFit: 'fill' as const,
+  }
+}
 
 export function Preview() {
   const mainLane = useEditorStore((state) => state.mainLane)
@@ -294,10 +349,7 @@ export function Preview() {
                 <video
                   ref={mainVideoRef}
                   src={`local-video://${encodeURIComponent(mainClip.filePath)}`}
-                  className="w-full h-full object-cover"
-                  style={{
-                    transform: `scale(${mainClip.cropScale ?? 1}) translate(${-mainClip.cropX * 25}%, ${-mainClip.cropY * 25}%)`
-                  }}
+                  style={getVideoStyle(mainClip, layoutType, isHorizontalOutput)}
                   preload="auto"
                   onTimeUpdate={handleTimeUpdate}
                 />
@@ -319,10 +371,7 @@ export function Preview() {
                 <video
                   ref={subVideoRef}
                   src={`local-video://${encodeURIComponent(subClip.filePath)}`}
-                  className="w-full h-full object-cover"
-                  style={{
-                    transform: `scale(${subClip.cropScale ?? 1}) translate(${-subClip.cropX * 25}%, ${-subClip.cropY * 25}%)`
-                  }}
+                  style={getVideoStyle(subClip, layoutType, isHorizontalOutput)}
                   preload="auto"
                 />
               ) : (

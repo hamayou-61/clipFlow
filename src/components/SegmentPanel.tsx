@@ -716,13 +716,26 @@ export function SegmentPanel() {
     const baseFrameWidth = videoHeight * targetAspect
     const frameHeight = baseFrameHeight / cropScale
     const frameWidth = baseFrameWidth / cropScale
-    const containerWidth = Math.max(videoWidth, frameWidth)
-    const containerHeight = videoHeight
-    const videoLeft = (containerWidth - videoWidth) / 2
-    const maxOffsetX = Math.max(0, (videoWidth - frameWidth) / 2)
-    const maxOffsetY = Math.max(0, (videoHeight - frameHeight) / 2)
-    const frameLeft = (containerWidth - frameWidth) / 2 + selectedClip.cropX * maxOffsetX
-    const frameTop = (containerHeight - frameHeight) / 2 + selectedClip.cropY * maxOffsetY
+    let containerWidth = Math.max(videoWidth, frameWidth)
+    let containerHeight = Math.max(videoHeight, frameHeight)
+
+    // Scale down to fit within the crop editor container (300x200)
+    const editorMaxWidth = 280
+    const editorMaxHeight = 180
+    const scaleToFit = Math.min(editorMaxWidth / containerWidth, editorMaxHeight / containerHeight, 1)
+    containerWidth *= scaleToFit
+    containerHeight *= scaleToFit
+    const scaledVideoWidth = videoWidth * scaleToFit
+    const scaledVideoHeight = videoHeight * scaleToFit
+    const scaledFrameWidth = frameWidth * scaleToFit
+    const scaledFrameHeight = frameHeight * scaleToFit
+
+    const videoLeft = (containerWidth - scaledVideoWidth) / 2
+    const videoTop = (containerHeight - scaledVideoHeight) / 2
+    const maxOffsetX = Math.max(0, (scaledVideoWidth - scaledFrameWidth) / 2)
+    const maxOffsetY = Math.max(0, (scaledVideoHeight - scaledFrameHeight) / 2)
+    const frameLeft = (containerWidth - scaledFrameWidth) / 2 + selectedClip.cropX * maxOffsetX
+    const frameTop = (containerHeight - scaledFrameHeight) / 2 + selectedClip.cropY * maxOffsetY
 
     const layoutLabel = clipLayoutType === 'single-main' ? 'フル画面' : clipLayoutType === 'split-h' ? '左右分割' : clipLayoutType === 'split-v' ? '上下分割' : 'ワイプ'
 
@@ -752,18 +765,18 @@ export function SegmentPanel() {
                 key={`crop-${selectedClip.id}`}
                 src={`local-video://${encodeURIComponent(selectedClip.filePath)}`}
                 className="absolute object-fill"
-                style={{ left: `${videoLeft}px`, top: 0, width: `${videoWidth}px`, height: `${videoHeight}px` }}
+                style={{ left: `${videoLeft}px`, top: `${videoTop}px`, width: `${scaledVideoWidth}px`, height: `${scaledVideoHeight}px` }}
                 muted
               />
               <div
                 className="absolute pointer-events-none"
-                style={{ left: `${videoLeft}px`, top: 0, width: `${videoWidth}px`, height: `${videoHeight}px` }}
+                style={{ left: `${videoLeft}px`, top: `${videoTop}px`, width: `${scaledVideoWidth}px`, height: `${scaledVideoHeight}px` }}
               >
                 <svg className="w-full h-full">
                   <defs>
                     <mask id={`crop-mask-${selectedClip.id}`}>
                       <rect width="100%" height="100%" fill="white" />
-                      <rect x={frameLeft - videoLeft} y={frameTop} width={frameWidth} height={frameHeight} fill="black" />
+                      <rect x={frameLeft - videoLeft} y={frameTop - videoTop} width={scaledFrameWidth} height={scaledFrameHeight} fill="black" />
                     </mask>
                   </defs>
                   <rect width="100%" height="100%" fill="rgba(0, 0, 0, 0.6)" mask={`url(#crop-mask-${selectedClip.id})`} />
@@ -771,30 +784,39 @@ export function SegmentPanel() {
               </div>
               <div
                 className="absolute border-2 border-editor-accent"
-                style={{ left: `${frameLeft}px`, top: `${frameTop}px`, width: `${frameWidth}px`, height: `${frameHeight}px` }}
+                style={{ left: `${frameLeft}px`, top: `${frameTop}px`, width: `${scaledFrameWidth}px`, height: `${scaledFrameHeight}px` }}
               />
             </div>
           </div>
         </div>
 
         {/* Zoom Slider */}
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-gray-500">ズーム</label>
-            <span className="text-xs text-white">{(cropScale * 100).toFixed(0)}%</span>
+        <div className="flex justify-center">
+          <div style={{ width: '300px' }}>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs text-gray-500">ズーム</label>
+              <span className="text-xs text-white">{(cropScale * 100).toFixed(0)}%</span>
+            </div>
+            <div className="relative">
+              <input
+                type="range"
+                min={0.5}
+                max={2}
+                step={0.05}
+                value={cropScale}
+                onChange={handleScaleChange}
+                className="w-full h-2 rounded-lg cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #3b82f6 ${((cropScale - 0.5) / 1.5) * 100}%, #3a3a3a ${((cropScale - 0.5) / 1.5) * 100}%)`,
+                }}
+              />
+              {/* 100% marker line */}
+              <div
+                className="absolute top-0 w-px h-2 bg-white pointer-events-none"
+                style={{ left: `${((1.0 - 0.5) / 1.5) * 100}%` }}
+              />
+            </div>
           </div>
-          <input
-            type="range"
-            min={0.5}
-            max={2}
-            step={0.05}
-            value={cropScale}
-            onChange={handleScaleChange}
-            className="w-full h-2 rounded-lg cursor-pointer"
-            style={{
-              background: `linear-gradient(to right, #3b82f6 ${((cropScale - 0.5) / 1.5) * 100}%, #3a3a3a ${((cropScale - 0.5) / 1.5) * 100}%)`,
-            }}
-          />
         </div>
       </div>
     )
