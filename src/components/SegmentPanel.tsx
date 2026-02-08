@@ -53,10 +53,15 @@ export function SegmentPanel() {
   const selectClip = useEditorStore((state) => state.selectClip)
   const updateClip = useEditorStore((state) => state.updateClip)
   const getOutputDuration = useEditorStore((state) => state.getOutputDuration)
+  const reorderSegments = useEditorStore((state) => state.reorderSegments)
 
   const [editMode, setEditMode] = useState<EditMode>('trim')
   const [isLoading, setIsLoading] = useState<LaneId | null>(null)
   const [dragOverLane, setDragOverLane] = useState<LaneId | null>(null)
+
+  // Segment tab drag state
+  const [draggedSegmentId, setDraggedSegmentId] = useState<string | null>(null)
+  const [dragOverSegmentId, setDragOverSegmentId] = useState<string | null>(null)
 
   // Trim state
   const [inValue, setInValue] = useState('')
@@ -743,28 +748,63 @@ export function SegmentPanel() {
         {segments.map((seg, index) => (
           <button
             key={seg.id}
+            draggable
             onClick={() => selectSegment(seg.id)}
-            className={`flex items-center gap-2 px-3 py-2 rounded-t-lg text-sm transition-colors whitespace-nowrap ${
-              selectedSegmentId === seg.id
+            onDragStart={(e) => {
+              setDraggedSegmentId(seg.id)
+              e.dataTransfer.effectAllowed = 'move'
+            }}
+            onDragEnd={() => {
+              setDraggedSegmentId(null)
+              setDragOverSegmentId(null)
+            }}
+            onDragOver={(e) => {
+              e.preventDefault()
+              if (draggedSegmentId && draggedSegmentId !== seg.id) {
+                setDragOverSegmentId(seg.id)
+              }
+            }}
+            onDragLeave={() => {
+              setDragOverSegmentId(null)
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              if (draggedSegmentId && draggedSegmentId !== seg.id) {
+                const fromIndex = segments.findIndex((s) => s.id === draggedSegmentId)
+                const toIndex = segments.findIndex((s) => s.id === seg.id)
+                if (fromIndex !== -1 && toIndex !== -1) {
+                  reorderSegments(fromIndex, toIndex)
+                }
+              }
+              setDraggedSegmentId(null)
+              setDragOverSegmentId(null)
+            }}
+            className={`flex items-center gap-2 px-3 py-2 rounded-t-lg text-sm transition-colors whitespace-nowrap cursor-grab active:cursor-grabbing ${
+              draggedSegmentId === seg.id
+                ? 'opacity-50'
+                : dragOverSegmentId === seg.id
+                ? 'bg-editor-accent/30 text-white'
+                : selectedSegmentId === seg.id
                 ? 'bg-editor-bg text-white'
                 : 'text-gray-500 hover:text-gray-300 bg-editor-surface hover:bg-editor-bg/50'
             }`}
           >
-            <span className="text-xs text-gray-500">#{index + 1}</span>
+            <span className="w-5 h-5 flex items-center justify-center bg-gray-600 rounded text-xs text-white">{index + 1}</span>
             <span>
               {seg.layoutType === 'single-main' ? 'メイン' : seg.layoutType === 'split-h' ? '左右' : '上下'}
             </span>
             <span className="text-xs text-gray-500">{getSegmentDuration(seg) > 0 ? formatTime(getSegmentDuration(seg)) : '--:--'}</span>
+            {index < segments.length - 1 && (
+              <span className="text-gray-600 ml-1">→</span>
+            )}
           </button>
         ))}
         <button
           onClick={handleAddSegment}
-          className="flex items-center gap-1 px-3 py-2 text-sm text-gray-500 hover:text-gray-300 transition-colors"
+          className="flex items-center gap-2 px-3 py-2 text-sm text-gray-500 hover:text-gray-300 transition-colors"
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          <span>#{segments.length + 1}</span>
+          <span className="w-5 h-5 flex items-center justify-center border border-dashed border-gray-500 rounded text-xs">+</span>
+          <span>追加</span>
         </button>
         <div className="ml-auto text-xs text-gray-500 whitespace-nowrap">
           出力尺: {formatTime(outputDuration)}
@@ -831,19 +871,23 @@ export function SegmentPanel() {
           {/* Clip Editor (Trim/Crop) */}
           {selectedClip && (
             <div className="border-t border-editor-border pt-4">
-              <div className="flex gap-1 mb-4">
+              <div className="flex border-b border-editor-border mb-4">
                 <button
                   onClick={() => setEditMode('trim')}
-                  className={`px-4 py-1.5 text-sm rounded transition-colors ${
-                    editMode === 'trim' ? 'bg-editor-accent text-white' : 'bg-editor-surface text-gray-400 hover:text-white'
+                  className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+                    editMode === 'trim'
+                      ? 'border-editor-accent text-white'
+                      : 'border-transparent text-gray-500 hover:text-gray-300'
                   }`}
                 >
                   トリム
                 </button>
                 <button
                   onClick={() => setEditMode('crop')}
-                  className={`px-4 py-1.5 text-sm rounded transition-colors ${
-                    editMode === 'crop' ? 'bg-editor-accent text-white' : 'bg-editor-surface text-gray-400 hover:text-white'
+                  className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+                    editMode === 'crop'
+                      ? 'border-editor-accent text-white'
+                      : 'border-transparent text-gray-500 hover:text-gray-300'
                   }`}
                 >
                   クロップ

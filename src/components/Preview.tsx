@@ -26,6 +26,7 @@ export function Preview() {
   const [sliderValue, setSliderValue] = useState(0)
   const isDraggingRef = useRef(false)
   const prevSegmentIdRef = useRef<string | null>(null)
+  const [showVolumeControls, setShowVolumeControls] = useState(false)
 
   const duration = getOutputDuration()
   const currentSegment = getSegmentAtPosition(sliderValue)
@@ -386,64 +387,87 @@ export function Preview() {
         </span>
       </div>
 
-      {/* Volume Controls */}
+      {/* Volume Controls Toggle */}
       {hasSegments && (
-        <div className="mt-4 max-w-3xl mx-auto">
-          <div className="flex items-center gap-6 text-xs">
-            {/* Main Volume */}
-            <div className="flex items-center gap-2 flex-1">
-              <span className="text-gray-500 w-12">メイン</span>
-              <input
-                type="range"
-                min={0}
-                max={2}
-                step={0.05}
-                value={mainVolume}
-                onChange={(e) => setMainVolume(parseFloat(e.target.value))}
-                className="flex-1 h-1.5 rounded-lg cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, #3b82f6 ${(mainVolume / 2) * 100}%, #3a3a3a ${(mainVolume / 2) * 100}%)`
-                }}
-              />
-              <span className="text-gray-400 w-10 text-right">{Math.round(mainVolume * 100)}%</span>
-            </div>
+        <div className="mt-3 max-w-3xl mx-auto flex flex-col items-end">
+          <button
+            onClick={() => setShowVolumeControls(!showVolumeControls)}
+            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            <svg
+              className={`w-3 h-3 transition-transform ${showVolumeControls ? 'rotate-90' : ''}`}
+              fill="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            <span>音量設定</span>
+            {!showVolumeControls && (
+              <span className="text-gray-600 ml-2">
+                (メイン {Math.round(mainVolume * 100)}% / サブ {Math.round(subVolume * 100)}%)
+              </span>
+            )}
+          </button>
 
-            {/* Balance */}
-            <div className="flex items-center gap-2">
-              <span className="text-gray-500">M</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={1}
-                value={audioBalance}
-                onChange={(e) => setAudioBalance(parseInt(e.target.value))}
-                className="w-20 h-1.5 rounded-lg cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, #3b82f6 ${audioBalance}%, #3a3a3a ${audioBalance}%)`
-                }}
-              />
-              <span className="text-gray-500">S</span>
-            </div>
+          {showVolumeControls && (
+            <div className="mt-3 p-3 bg-editor-bg rounded-lg border border-editor-border w-full">
+              <div className="flex items-center gap-6 text-xs">
+                {/* Main Volume */}
+                <div className="flex items-center gap-2 flex-1">
+                  <span className="text-gray-500 w-12">メイン</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    value={mainVolume}
+                    onChange={(e) => setMainVolume(parseFloat(e.target.value))}
+                    className="flex-1 h-1.5 rounded-lg cursor-pointer"
+                    style={{
+                      background: `linear-gradient(to right, #3b82f6 ${(mainVolume / 2) * 100}%, #3a3a3a ${(mainVolume / 2) * 100}%)`
+                    }}
+                  />
+                  <span className="text-gray-400 w-10 text-right">{Math.round(mainVolume * 100)}%</span>
+                </div>
 
-            {/* Sub Volume */}
-            <div className="flex items-center gap-2 flex-1">
-              <span className="text-gray-500 w-12">サブ</span>
-              <input
-                type="range"
-                min={0}
-                max={2}
-                step={0.05}
-                value={subVolume}
-                onChange={(e) => setSubVolume(parseFloat(e.target.value))}
-                className="flex-1 h-1.5 rounded-lg cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, #3b82f6 ${(subVolume / 2) * 100}%, #3a3a3a ${(subVolume / 2) * 100}%)`
-                }}
-              />
-              <span className="text-gray-400 w-10 text-right">{Math.round(subVolume * 100)}%</span>
+                {/* Balance */}
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-500">M</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={audioBalance}
+                    onChange={(e) => setAudioBalance(parseInt(e.target.value))}
+                    className="w-20 h-1.5 rounded-lg cursor-pointer"
+                    style={{
+                      background: `linear-gradient(to right, #3b82f6 ${audioBalance}%, #3a3a3a ${audioBalance}%)`
+                    }}
+                  />
+                  <span className="text-gray-500">S</span>
+                </div>
+
+                {/* Sub Volume */}
+                <div className="flex items-center gap-2 flex-1">
+                  <span className="text-gray-500 w-12">サブ</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    value={subVolume}
+                    onChange={(e) => setSubVolume(parseFloat(e.target.value))}
+                    className="flex-1 h-1.5 rounded-lg cursor-pointer"
+                    style={{
+                      background: `linear-gradient(to right, #3b82f6 ${(subVolume / 2) * 100}%, #3a3a3a ${(subVolume / 2) * 100}%)`
+                    }}
+                  />
+                  <span className="text-gray-400 w-10 text-right">{Math.round(subVolume * 100)}%</span>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
