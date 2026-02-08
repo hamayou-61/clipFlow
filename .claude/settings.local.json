@@ -15,7 +15,9 @@
       "Bash(npm run electron:dev:*)",
       "Bash(npx eslint:*)",
       "Bash(npx vitest:*)",
-      "Bash(npm run check:all:*)"
+      "Bash(npm run check:all:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
