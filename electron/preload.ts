@@ -2,8 +2,10 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 export interface ElectronAPI {
   openFileDialog: () => Promise<string | null>
+  openAudioFileDialog: () => Promise<string | null>
   saveFileDialog: () => Promise<string | null>
   getVideoMetadata: (filePath: string) => Promise<VideoMetadata>
+  getAudioDuration: (filePath: string) => Promise<number>
   generateThumbnails: (filePath: string, count: number) => Promise<string[]>
   exportVideo: (config: ExportConfig) => Promise<void>
   onExportProgress: (callback: (progress: number) => void) => void
@@ -17,7 +19,7 @@ export interface VideoMetadata {
   fps: number
 }
 
-export type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'single-sub'
+export type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'single-sub' | 'pip'
 
 export interface ClipInfo {
   filePath: string
@@ -39,6 +41,13 @@ export interface SegmentExport {
   subInPoint: number
 }
 
+export interface BgmConfig {
+  filePath: string
+  volume: number
+  fadeIn: number
+  fadeOut: number
+}
+
 export interface ExportConfig {
   outputPath: string
   aspectRatio: '16:9' | '9:16'
@@ -46,12 +55,15 @@ export interface ExportConfig {
   mainVolume: number
   subVolume: number
   segments: SegmentExport[]
+  bgm?: BgmConfig
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
   openFileDialog: () => ipcRenderer.invoke('dialog:openFile'),
+  openAudioFileDialog: () => ipcRenderer.invoke('dialog:openAudioFile'),
   saveFileDialog: () => ipcRenderer.invoke('dialog:saveFile'),
   getVideoMetadata: (filePath: string) => ipcRenderer.invoke('video:getMetadata', filePath),
+  getAudioDuration: (filePath: string) => ipcRenderer.invoke('audio:getDuration', filePath),
   generateThumbnails: (filePath: string, count: number) => ipcRenderer.invoke('video:generateThumbnails', filePath, count),
   exportVideo: (config: ExportConfig) => ipcRenderer.invoke('video:export', config),
   onExportProgress: (callback: (progress: number) => void) => {

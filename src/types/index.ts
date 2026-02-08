@@ -24,7 +24,7 @@ export interface Lane {
 }
 
 // Layout types for segments
-export type LayoutType = 'split-h' | 'split-v' | 'single-main'
+export type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'pip'
 
 // Segment represents a portion of the output video with a specific layout
 export interface Segment {
@@ -69,5 +69,5 @@ export function layoutUsesSub(layoutType: LayoutType): boolean {
 
 // Helper to check if layout is split (uses both lanes)
 export function layoutIsSplit(layoutType: LayoutType): boolean {
-  return layoutType === 'split-h' || layoutType === 'split-v'
+  return layoutType === 'split-h' || layoutType === 'split-v' || layoutType === 'pip'
 }

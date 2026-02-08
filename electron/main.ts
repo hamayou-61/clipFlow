@@ -196,6 +196,25 @@ ipcMain.handle('dialog:openFile', async () => {
   return result.filePaths[0] || null
 })
 
+ipcMain.handle('dialog:openAudioFile', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Audio Files', extensions: ['mp3', 'wav', 'aac', 'flac', 'm4a', 'ogg'] }
+    ]
+  })
+  return result.filePaths[0] || null
+})
+
+ipcMain.handle('audio:getDuration', async (_event, filePath: string) => {
+  return new Promise<number>((resolve, reject) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) return reject(err)
+      resolve(metadata.format.duration || 0)
+    })
+  })
+})
+
 ipcMain.handle('dialog:saveFile', async () => {
   const result = await dialog.showSaveDialog(mainWindow!, {
     defaultPath: `split_${formatDateTime()}.mp4`,
@@ -219,7 +238,7 @@ function formatDateTime(): string {
 
 // Video IPC Handlers
 
-type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'single-sub'
+type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'single-sub' | 'pip'
 
 interface ClipInfo {
   filePath: string
@@ -241,6 +260,13 @@ interface SegmentExport {
   subInPoint: number
 }
 
+interface BgmConfig {
+  filePath: string
+  volume: number
+  fadeIn: number
+  fadeOut: number
+}
+
 interface ExportConfig {
   outputPath: string
   aspectRatio: '16:9' | '9:16'
@@ -248,6 +274,7 @@ interface ExportConfig {
   mainVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
   subVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
   segments: SegmentExport[]
+  bgm?: BgmConfig
 }
 
 ipcMain.handle('video:getMetadata', async (_, filePath: string) => {
@@ -348,9 +375,9 @@ ipcMain.handle('video:generateThumbnails', async (_, filePath: string, count: nu
 })
 
 ipcMain.handle('video:export', async (event, config: ExportConfig) => {
-  const { outputPath, aspectRatio, audioBalance, mainVolume, subVolume, segments } = config
+  const { outputPath, aspectRatio, audioBalance, mainVolume, subVolume, segments, bgm } = config
 
-  console.log('Starting export with config:', { outputPath, aspectRatio, audioBalance, mainVolume, subVolume })
+  console.log('Starting export with config:', { outputPath, aspectRatio, audioBalance, mainVolume, subVolume, bgm: bgm?.filePath })
   console.log('Segments:', segments.length)
 
   if (segments.length === 0) {
@@ -386,6 +413,22 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
   console.log('Input files:', inputFiles)
   console.log('Total duration:', outputDuration)
 
+  // Probe each input file to check for audio streams
+  const fileHasAudio = new Map<string, boolean>()
+  for (const filePath of inputFiles) {
+    const hasAudio = await new Promise<boolean>((resolve) => {
+      ffmpeg.ffprobe(filePath, (err, metadata) => {
+        if (err) {
+          resolve(false)
+          return
+        }
+        const audioStream = metadata.streams.find(s => s.codec_type === 'audio')
+        resolve(!!audioStream)
+      })
+    })
+    fileHasAudio.set(filePath, hasAudio)
+  }
+
   return new Promise<void>((resolve, reject) => {
     const videoFilters: string[] = []
     const audioFilters: string[] = []
@@ -418,6 +461,12 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         mainTargetHeight = outputHeight / 2
         subTargetWidth = outputWidth
         subTargetHeight = outputHeight / 2
+      } else if (layoutType === 'pip') {
+        // Picture-in-Picture: main fullscreen, sub small in corner
+        mainTargetWidth = outputWidth
+        mainTargetHeight = outputHeight
+        subTargetWidth = Math.round(outputWidth / 4)
+        subTargetHeight = Math.round(outputHeight / 4)
       } else {
         // Single mode: full frame
         mainTargetWidth = outputWidth
@@ -468,7 +517,12 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         const startTime = clip.inPoint + inPointOffset
         const endTime = startTime + duration
 
-        return `[${inputIdx}:a]atrim=start=${startTime}:end=${endTime},asetpts=PTS-STARTPTS[${label}]`
+        if (fileHasAudio.get(clip.filePath)) {
+          return `[${inputIdx}:a]atrim=start=${startTime}:end=${endTime},asetpts=PTS-STARTPTS[${label}]`
+        } else {
+          // No audio stream - generate silence
+          return `anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${label}]`
+        }
       }
 
       const segVideoLabel = `segv${segIdx}`
@@ -496,9 +550,7 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
           audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${segAudioLabel}]`)
         }
       } else {
-        // Split mode (split-h or split-v)
-        const stackFilter = layoutType === 'split-h' ? 'hstack' : 'vstack'
-
+        // Split or PiP mode
         const mainLabel = `seg${segIdx}_main`
         const subLabel = `seg${segIdx}_sub`
 
@@ -518,8 +570,16 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
           videoFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${subLabel}_a]`)
         }
 
-        // Stack the two clips
-        videoFilters.push(`[${mainLabel}][${subLabel}]${stackFilter}=inputs=2[${segVideoLabel}]`)
+        // Compose the two clips
+        if (layoutType === 'pip') {
+          // PiP: overlay sub on main at bottom-right with margin
+          const pipMargin = 40
+          videoFilters.push(`[${mainLabel}][${subLabel}]overlay=W-w-${pipMargin}:H-h-${pipMargin}[${segVideoLabel}]`)
+        } else {
+          // Split: stack side-by-side or top-bottom
+          const stackFilter = layoutType === 'split-h' ? 'hstack' : 'vstack'
+          videoFilters.push(`[${mainLabel}][${subLabel}]${stackFilter}=inputs=2[${segVideoLabel}]`)
+        }
 
         // Mix audio for this segment
         if (audioBalance === 0) {
@@ -553,7 +613,41 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
       audioFilters.push(`[sega0]acopy[aout]`)
     }
 
-    const filterComplex = [...videoFilters, ...audioFilters].join(';')
+    // BGM processing
+    let finalAudioLabel = 'aout'
+    const bgmFilters: string[] = []
+
+    if (bgm?.filePath) {
+      const bgmInputIdx = getInputIndex(bgm.filePath)
+
+      // Loop BGM if shorter than output, then trim to output duration
+      const loopCount = Math.ceil(outputDuration / 0.01) // large enough for aloop
+      let bgmChain = `[${bgmInputIdx}:a]aloop=loop=${loopCount}:size=2147483647`
+      bgmChain += `,atrim=0:${outputDuration},asetpts=PTS-STARTPTS`
+
+      // Volume
+      bgmChain += `,volume=${bgm.volume}`
+
+      // Fade in
+      if (bgm.fadeIn > 0) {
+        bgmChain += `,afade=t=in:st=0:d=${bgm.fadeIn}`
+      }
+
+      // Fade out
+      if (bgm.fadeOut > 0) {
+        const fadeOutStart = Math.max(0, outputDuration - bgm.fadeOut)
+        bgmChain += `,afade=t=out:st=${fadeOutStart}:d=${bgm.fadeOut}`
+      }
+
+      bgmChain += `[bgm_final]`
+      bgmFilters.push(bgmChain)
+
+      // Mix BGM with main audio
+      bgmFilters.push(`[aout][bgm_final]amix=inputs=2:duration=first:normalize=0[aout_bgm]`)
+      finalAudioLabel = 'aout_bgm'
+    }
+
+    const filterComplex = [...videoFilters, ...audioFilters, ...bgmFilters].join(';')
 
     console.log('Filter complex:', filterComplex)
 
@@ -567,7 +661,7 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
     exportCommand
       .addOption('-filter_complex', filterComplex)
       .addOption('-map', '[vout]')
-      .addOption('-map', '[aout]')
+      .addOption('-map', `[${finalAudioLabel}]`)
       .addOption('-c:v', 'libx264')
       .addOption('-preset', 'fast')
       .addOption('-crf', '23')

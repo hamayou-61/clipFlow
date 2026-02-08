@@ -33,6 +33,16 @@ const LAYOUT_OPTIONS: { type: LayoutType; label: string; icon: JSX.Element }[] =
       </svg>
     ),
   },
+  {
+    type: 'pip',
+    label: 'ワイプ',
+    icon: (
+      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+        <rect x="3" y="4" width="18" height="16" rx="1" opacity="0.6" />
+        <rect x="13" y="12" width="7" height="6" rx="1" />
+      </svg>
+    ),
+  },
 ]
 
 type EditMode = 'trim' | 'crop'
@@ -92,7 +102,7 @@ export function SegmentPanel() {
     if (!selectedClipId || selectedLaneId !== 'sub') return null
     const segment = segments.find((seg) => seg.subClipId === selectedClipId)
     if (!segment) return null
-    if (segment.layoutType !== 'split-h' && segment.layoutType !== 'split-v') return null
+    if (segment.layoutType !== 'split-h' && segment.layoutType !== 'split-v' && segment.layoutType !== 'pip') return null
     const mainClip = segment.mainClipId
       ? mainLane.clips.find((c) => c.id === segment.mainClipId)
       : null
@@ -307,30 +317,46 @@ export function SegmentPanel() {
   }
 
   // ===== TRIM FUNCTIONS =====
-  const handleTrimSliderMouseDown = useCallback(
-    (e: React.MouseEvent, handle: 'in' | 'out') => {
+  const handleTrimMouseDown = useCallback(
+    (e: React.MouseEvent, handle: 'in' | 'out' | 'range') => {
       if (!selectedClip || !selectedLaneId || !trimSliderRef.current) return
       if (subClipConstraint && handle === 'out') return
       e.preventDefault()
+      e.stopPropagation()
       const rect = trimSliderRef.current.getBoundingClientRect()
+      const startX = e.clientX
+      const startIn = selectedClip.inPoint
+      const startOut = selectedClip.outPoint
+      const rangeDuration = startOut - startIn
 
       const handleMouseMove = (moveEvent: MouseEvent) => {
         const x = moveEvent.clientX - rect.left
         const ratio = clamp(x / rect.width, 0, 1)
-        let newValue = ratio * selectedClip.duration
-        if (!moveEvent.shiftKey) {
-          newValue = snapToGrid(newValue, 0.5)
-        }
-        if (subClipConstraint) {
-          const newIn = clamp(newValue, 0, selectedClip.duration - subClipConstraint.mainDuration)
-          const newOut = newIn + subClipConstraint.mainDuration
+
+        if (handle === 'range' || (subClipConstraint && handle === 'in')) {
+          // Slide the entire range
+          const deltaX = moveEvent.clientX - startX
+          const deltaRatio = deltaX / rect.width
+          let deltaTime = deltaRatio * selectedClip.duration
+          if (!moveEvent.shiftKey) {
+            deltaTime = snapToGrid(deltaTime, 0.5)
+          }
+          const dur = subClipConstraint ? subClipConstraint.mainDuration : rangeDuration
+          const newIn = clamp(startIn + deltaTime, 0, selectedClip.duration - dur)
+          const newOut = newIn + dur
           updateClip(selectedLaneId, selectedClip.id, { inPoint: newIn, outPoint: newOut })
-          return
-        }
-        if (handle === 'in') {
+        } else if (handle === 'in') {
+          let newValue = ratio * selectedClip.duration
+          if (!moveEvent.shiftKey) {
+            newValue = snapToGrid(newValue, 0.5)
+          }
           newValue = clamp(newValue, 0, selectedClip.outPoint - 0.1)
           updateClip(selectedLaneId, selectedClip.id, { inPoint: newValue })
         } else {
+          let newValue = ratio * selectedClip.duration
+          if (!moveEvent.shiftKey) {
+            newValue = snapToGrid(newValue, 0.5)
+          }
           newValue = clamp(newValue, selectedClip.inPoint + 0.1, selectedClip.duration)
           updateClip(selectedLaneId, selectedClip.id, { outPoint: newValue })
         }
@@ -424,7 +450,7 @@ export function SegmentPanel() {
 
   // Calculate crop aspect ratio
   const targetAspect = useMemo(() => {
-    if (clipLayoutType === 'single-main') {
+    if (clipLayoutType === 'single-main' || clipLayoutType === 'pip') {
       return isVertical ? 9 / 16 : 16 / 9
     } else if (clipLayoutType === 'split-h') {
       return isVertical ? 9 / 32 : 8 / 9
@@ -516,77 +542,112 @@ export function SegmentPanel() {
     )
   }
 
-  // Render trim editor
+  // Render trim editor (iOS-style thumbnail trimming)
   const renderTrimEditor = () => {
     if (!selectedClip) return null
 
     const usedDuration = selectedClip.outPoint - selectedClip.inPoint
     const inPercent = (selectedClip.inPoint / selectedClip.duration) * 100
     const outPercent = (selectedClip.outPoint / selectedClip.duration) * 100
+    const handleWidth = 14 // px
 
     return (
       <div className="space-y-4">
-        {/* Thumbnail Strip */}
-        <div className="relative">
-          <div className="flex gap-0.5 rounded overflow-hidden">
-            {Array.from({ length: 10 }).map((_, i) => {
-              const segStart = (i / 10) * 100
-              const segEnd = ((i + 1) / 10) * 100
-              const isInRange = segEnd > inPercent && segStart < outPercent
-              return (
-                <div key={i} className={`flex-1 aspect-video transition-opacity ${isInRange ? 'opacity-100' : 'opacity-30'}`}>
+        {/* iOS-style Thumbnail Trim Strip */}
+        <div
+          ref={trimSliderRef}
+          className="relative select-none"
+          style={{ height: '50px', marginLeft: `${handleWidth}px`, marginRight: `${handleWidth}px` }}
+        >
+          {/* Thumbnail images (clipped to rounded rect) */}
+          <div className="absolute inset-0 rounded-lg overflow-hidden">
+            <div className="flex h-full">
+              {Array.from({ length: 10 }).map((_, i) => (
+                <div key={i} className="flex-1 h-full">
                   {selectedClip.thumbnails[i] ? (
-                    <img src={selectedClip.thumbnails[i]} alt="" className="w-full h-full object-cover" />
+                    <img
+                      src={selectedClip.thumbnails[i]}
+                      alt=""
+                      className="w-full h-full object-cover"
+                      draggable={false}
+                    />
                   ) : (
                     <div className="w-full h-full bg-editor-surface flex items-center justify-center">
                       <span className="text-[8px] text-gray-600">{i + 1}</span>
                     </div>
                   )}
                 </div>
-              )
-            })}
+              ))}
+            </div>
+
+            {/* Left dim overlay (before IN point) */}
+            <div
+              className="absolute top-0 bottom-0 left-0 bg-black/70 pointer-events-none"
+              style={{ width: `${inPercent}%` }}
+            />
+
+            {/* Right dim overlay (after OUT point) */}
+            <div
+              className="absolute top-0 bottom-0 right-0 bg-black/70 pointer-events-none"
+              style={{ width: `${100 - outPercent}%` }}
+            />
+
+            {/* Trim frame borders + center drag */}
+            <div
+              className="absolute top-0 bottom-0"
+              style={{
+                left: `${inPercent}%`,
+                right: `${100 - outPercent}%`,
+              }}
+            >
+              <div className="absolute top-0 left-0 right-0 h-[3px] bg-editor-accent" />
+              <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-editor-accent" />
+              <div
+                className="absolute inset-0 cursor-grab active:cursor-grabbing"
+                onMouseDown={(e) => handleTrimMouseDown(e, 'range')}
+              />
+            </div>
           </div>
+
+          {/* Left handle (IN) - outside overflow-hidden */}
           <div
-            className="absolute top-0 bottom-0 border-2 border-editor-accent rounded pointer-events-none"
-            style={{ left: `${inPercent}%`, right: `${100 - outPercent}%` }}
-          />
+            className="absolute top-0 bottom-0 flex items-center justify-center bg-editor-accent cursor-ew-resize hover:brightness-110 active:brightness-125 transition-all z-10"
+            style={{
+              width: `${handleWidth}px`,
+              left: `calc(${inPercent}% - ${handleWidth}px)`,
+              borderRadius: '6px 0 0 6px',
+            }}
+            onMouseDown={(e) => handleTrimMouseDown(e, subClipConstraint ? 'range' : 'in')}
+          >
+            <svg width="6" height="16" viewBox="0 0 6 16" fill="none">
+              <path d="M4 2L1 8L4 14" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+
+          {/* Right handle (OUT) - outside overflow-hidden */}
+          <div
+            className={`absolute top-0 bottom-0 flex items-center justify-center transition-all z-10 ${
+              subClipConstraint
+                ? 'bg-gray-500 cursor-not-allowed'
+                : 'bg-editor-accent cursor-ew-resize hover:brightness-110 active:brightness-125'
+            }`}
+            style={{
+              width: `${handleWidth}px`,
+              right: `calc(${100 - outPercent}% - ${handleWidth}px)`,
+              borderRadius: '0 6px 6px 0',
+            }}
+            onMouseDown={(e) => handleTrimMouseDown(e, 'out')}
+          >
+            <svg width="6" height="16" viewBox="0 0 6 16" fill="none">
+              <path d="M2 2L5 8L2 14" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
         </div>
 
-        {/* Range Slider */}
-        <div>
-          <div ref={trimSliderRef} className="relative h-6 bg-editor-surface rounded cursor-pointer">
-            <div className="absolute inset-y-0 left-0 right-0 flex items-center">
-              <div className="w-full h-1 bg-editor-border rounded" />
-            </div>
-            <div
-              className="absolute inset-y-0 flex items-center"
-              style={{ left: `${inPercent}%`, right: `${100 - outPercent}%` }}
-            >
-              <div className="w-full h-1 bg-editor-accent rounded" />
-            </div>
-            {/* IN Handle */}
-            <div
-              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full shadow cursor-ew-resize hover:scale-110 transition-transform"
-              style={{ left: `${inPercent}%` }}
-              onMouseDown={(e) => handleTrimSliderMouseDown(e, 'in')}
-            >
-              <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[10px] text-gray-500">IN</div>
-            </div>
-            {/* OUT Handle */}
-            <div
-              className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 rounded-full shadow transition-transform ${
-                subClipConstraint ? 'bg-gray-500 cursor-not-allowed' : 'bg-white cursor-ew-resize hover:scale-110'
-              }`}
-              style={{ left: `${outPercent}%` }}
-              onMouseDown={(e) => handleTrimSliderMouseDown(e, 'out')}
-            >
-              <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[10px] text-gray-500">OUT</div>
-            </div>
-          </div>
-          <div className="flex justify-between mt-1 text-xs text-gray-500">
-            <span>0.0s</span>
-            <span>{formatTime(selectedClip.duration)}</span>
-          </div>
+        {/* Time labels */}
+        <div className="flex justify-between text-xs text-gray-500">
+          <span>0.0s</span>
+          <span>{formatTime(selectedClip.duration)}</span>
         </div>
 
         {/* Numeric Inputs */}
@@ -663,7 +724,7 @@ export function SegmentPanel() {
     const frameLeft = (containerWidth - frameWidth) / 2 + selectedClip.cropX * maxOffsetX
     const frameTop = (containerHeight - frameHeight) / 2 + selectedClip.cropY * maxOffsetY
 
-    const layoutLabel = clipLayoutType === 'single-main' ? 'フル画面' : clipLayoutType === 'split-h' ? '左右分割' : '上下分割'
+    const layoutLabel = clipLayoutType === 'single-main' ? 'フル画面' : clipLayoutType === 'split-h' ? '左右分割' : clipLayoutType === 'split-v' ? '上下分割' : 'ワイプ'
 
     return (
       <div className="space-y-4">
@@ -791,7 +852,7 @@ export function SegmentPanel() {
           >
             <span className="w-5 h-5 flex items-center justify-center bg-gray-600 rounded text-xs text-white">{index + 1}</span>
             <span>
-              {seg.layoutType === 'single-main' ? 'メイン' : seg.layoutType === 'split-h' ? '左右' : '上下'}
+              {seg.layoutType === 'single-main' ? 'メイン' : seg.layoutType === 'split-h' ? '左右' : seg.layoutType === 'split-v' ? '上下' : 'ワイプ'}
             </span>
             <span className="text-xs text-gray-500">{getSegmentDuration(seg) > 0 ? formatTime(getSegmentDuration(seg)) : '--:--'}</span>
             {index < segments.length - 1 && (
@@ -857,13 +918,13 @@ export function SegmentPanel() {
           <div className={`grid gap-4 mb-4 ${selectedSegment.layoutType === 'single-main' ? 'grid-cols-1' : 'grid-cols-2'}`}>
             {renderClipSlot(
               'main',
-              selectedSegment.layoutType === 'split-h' ? '左側（メイン）' : selectedSegment.layoutType === 'split-v' ? '上側（メイン）' : 'メイン',
+              selectedSegment.layoutType === 'split-h' ? '左側（メイン）' : selectedSegment.layoutType === 'split-v' ? '上側（メイン）' : selectedSegment.layoutType === 'pip' ? 'メイン（全画面）' : 'メイン',
               selectedSegment.mainClipId
             )}
             {selectedSegment.layoutType !== 'single-main' &&
               renderClipSlot(
                 'sub',
-                selectedSegment.layoutType === 'split-h' ? '右側（サブ）' : '下側（サブ）',
+                selectedSegment.layoutType === 'split-h' ? '右側（サブ）' : selectedSegment.layoutType === 'pip' ? 'サブ（ワイプ）' : '下側（サブ）',
                 selectedSegment.subClipId
               )}
           </div>

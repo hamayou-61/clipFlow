@@ -126,6 +126,7 @@ export function CropEditor() {
       case 'single-main': return 'フル画面'
       case 'split-h': return '左右分割'
       case 'split-v': return '上下分割'
+      case 'pip': return 'ワイプ'
       default: return ''
     }
   }, [clipLayoutType])
@@ -138,7 +139,7 @@ export function CropEditor() {
   // split-h: Half width (8:9 for 16:9 output, 9:32 for 9:16 output)
   // split-v: Half height (32:9 for 16:9 output, 9:8 for 9:16 output)
   const targetAspect = useMemo(() => {
-    if (clipLayoutType === 'single-main') {
+    if (clipLayoutType === 'single-main' || clipLayoutType === 'pip') {
       // Full frame - use output aspect ratio
       return isVertical ? (9 / 16) : (16 / 9)
     } else if (clipLayoutType === 'split-h') {

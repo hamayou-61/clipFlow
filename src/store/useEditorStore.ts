@@ -24,6 +24,14 @@ interface EditorState {
   mainVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
   subVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
 
+  // BGM
+  bgmFilePath: string | null
+  bgmFileName: string | null
+  bgmDuration: number
+  bgmVolume: number
+  bgmFadeIn: number
+  bgmFadeOut: number
+
   // Export state
   isExporting: boolean
   exportProgress: number
@@ -48,6 +56,10 @@ interface EditorState {
   setAudioBalance: (balance: number) => void
   setMainVolume: (volume: number) => void
   setSubVolume: (volume: number) => void
+  setBgm: (filePath: string | null, fileName: string | null, duration: number) => void
+  setBgmVolume: (volume: number) => void
+  setBgmFadeIn: (seconds: number) => void
+  setBgmFadeOut: (seconds: number) => void
   setExporting: (isExporting: boolean) => void
   setExportProgress: (progress: number) => void
 
@@ -73,6 +85,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   audioBalance: 50, // Default to equal mix
   mainVolume: 1.0, // Default to 100%
   subVolume: 1.0, // Default to 100%
+  bgmFilePath: null,
+  bgmFileName: null,
+  bgmDuration: 0,
+  bgmVolume: 0.5,
+  bgmFadeIn: 0,
+  bgmFadeOut: 0,
   isExporting: false,
   exportProgress: 0,
 
@@ -196,6 +214,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setMainVolume: (volume) => set({ mainVolume: volume }),
 
   setSubVolume: (volume) => set({ subVolume: volume }),
+
+  setBgm: (filePath, fileName, duration) => set({ bgmFilePath: filePath, bgmFileName: fileName, bgmDuration: duration }),
+
+  setBgmVolume: (volume) => set({ bgmVolume: volume }),
+
+  setBgmFadeIn: (seconds) => set({ bgmFadeIn: seconds }),
+
+  setBgmFadeOut: (seconds) => set({ bgmFadeOut: seconds }),
 
   setExporting: (isExporting) => set({ isExporting }),
 

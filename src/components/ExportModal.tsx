@@ -23,6 +23,13 @@ interface SegmentExport {
   subInPoint: number
 }
 
+interface BgmConfig {
+  filePath: string
+  volume: number
+  fadeIn: number
+  fadeOut: number
+}
+
 interface ExportConfig {
   outputPath: string
   aspectRatio: '16:9' | '9:16'
@@ -30,6 +37,7 @@ interface ExportConfig {
   mainVolume: number
   subVolume: number
   segments: SegmentExport[]
+  bgm?: BgmConfig
 }
 
 interface ExportModalProps {
@@ -49,6 +57,11 @@ export function ExportModal({ onClose }: ExportModalProps) {
   const mainLane = useEditorStore((state) => state.mainLane)
   const subLane = useEditorStore((state) => state.subLane)
   const segments = useEditorStore((state) => state.segments)
+  const bgmFilePath = useEditorStore((state) => state.bgmFilePath)
+  const bgmFileName = useEditorStore((state) => state.bgmFileName)
+  const bgmVolume = useEditorStore((state) => state.bgmVolume)
+  const bgmFadeIn = useEditorStore((state) => state.bgmFadeIn)
+  const bgmFadeOut = useEditorStore((state) => state.bgmFadeOut)
 
   const outputDuration = getOutputDuration()
 
@@ -130,6 +143,14 @@ export function ExportModal({ onClose }: ExportModalProps) {
       mainVolume,
       subVolume,
       segments: segmentExports,
+      ...(bgmFilePath ? {
+        bgm: {
+          filePath: bgmFilePath,
+          volume: bgmVolume,
+          fadeIn: bgmFadeIn,
+          fadeOut: bgmFadeOut,
+        }
+      } : {}),
     }
 
     try {
@@ -141,7 +162,7 @@ export function ExportModal({ onClose }: ExportModalProps) {
     } finally {
       setExporting(false)
     }
-  }, [savePath, aspectRatio, audioBalance, mainVolume, subVolume, segments, mainLane.clips, subLane.clips, setExporting, setExportProgress])
+  }, [savePath, aspectRatio, audioBalance, mainVolume, subVolume, segments, mainLane.clips, subLane.clips, setExporting, setExportProgress, bgmFilePath, bgmVolume, bgmFadeIn, bgmFadeOut])
 
   const handleCancel = useCallback(() => {
     if (isExporting) {
@@ -215,6 +236,14 @@ export function ExportModal({ onClose }: ExportModalProps) {
           <div className="flex items-center justify-between text-sm">
             <span className="text-gray-400">アスペクト比:</span>
             <span className="text-white">{aspectLabel}</span>
+          </div>
+
+          {/* BGM */}
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-gray-400">BGM:</span>
+            <span className="text-white truncate max-w-[200px]">
+              {bgmFileName ? `${bgmFileName} (${Math.round(bgmVolume * 100)}%)` : 'なし'}
+            </span>
           </div>
 
           {/* Save Path */}
