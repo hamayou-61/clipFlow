@@ -17,7 +17,8 @@
       "Bash(npx vitest:*)",
       "Bash(npm run check:all:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "mcp__ide__getDiagnostics"
     ]
   }
 }

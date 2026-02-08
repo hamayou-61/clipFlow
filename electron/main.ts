@@ -85,8 +85,8 @@ app.whenReady().then(() => {
           const end = match[2] ? parseInt(match[2], 10) : fileSize - 1
           const chunkSize = end - start + 1
 
-          // Create read stream for the requested range
-          const stream = fs.createReadStream(filePath, { start, end })
+          // Create read stream for the requested range with limited buffer size
+          const stream = fs.createReadStream(filePath, { start, end, highWaterMark: 64 * 1024 })
 
           // Convert Node stream to Web ReadableStream
           const webStream = new ReadableStream({
@@ -127,8 +127,8 @@ app.whenReady().then(() => {
         }
       }
 
-      // No range request - return full file
-      const stream = fs.createReadStream(filePath)
+      // No range request - return full file with limited buffer size
+      const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 })
       const webStream = new ReadableStream({
         start(controller) {
           let closed = false
@@ -200,7 +200,7 @@ ipcMain.handle('dialog:openAudioFile', async () => {
   const result = await dialog.showOpenDialog(mainWindow!, {
     properties: ['openFile'],
     filters: [
-      { name: 'Audio Files', extensions: ['mp3', 'wav', 'aac', 'flac', 'm4a', 'ogg'] }
+      { name: 'Audio/Video Files', extensions: ['mp3', 'wav', 'aac', 'flac', 'm4a', 'ogg', 'mp4', 'mov'] }
     ]
   })
   return result.filePaths[0] || null
@@ -389,7 +389,7 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
   const outputWidth = isVertical ? 1080 : 1920
   const outputHeight = isVertical ? 1920 : 1080
 
-  // Collect all unique input files
+  // Collect all unique input files (BGM is handled separately)
   const inputFiles: string[] = []
   const fileToInputIndex = new Map<string, number>()
 
@@ -406,6 +406,13 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
     if (seg.mainClip) getInputIndex(seg.mainClip.filePath)
     if (seg.subClip) getInputIndex(seg.subClip.filePath)
   })
+
+  // BGM input index (added last, with stream_loop option)
+  let bgmInputIdx = -1
+  if (bgm?.filePath) {
+    bgmInputIdx = inputFiles.length
+    inputFiles.push(bgm.filePath)
+  }
 
   // Calculate total duration
   const outputDuration = segments.reduce((sum, seg) => sum + seg.duration, 0)
@@ -617,13 +624,10 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
     let finalAudioLabel = 'aout'
     const bgmFilters: string[] = []
 
-    if (bgm?.filePath) {
-      const bgmInputIdx = getInputIndex(bgm.filePath)
-
-      // Loop BGM if shorter than output, then trim to output duration
-      const loopCount = Math.ceil(outputDuration / 0.01) // large enough for aloop
-      let bgmChain = `[${bgmInputIdx}:a]aloop=loop=${loopCount}:size=2147483647`
-      bgmChain += `,atrim=0:${outputDuration},asetpts=PTS-STARTPTS`
+    if (bgm?.filePath && bgmInputIdx >= 0) {
+      // BGM is added with -stream_loop -1, so it loops infinitely
+      // Just trim to output duration and apply effects
+      let bgmChain = `[${bgmInputIdx}:a]atrim=0:${outputDuration},asetpts=PTS-STARTPTS`
 
       // Volume
       bgmChain += `,volume=${bgm.volume}`
@@ -654,8 +658,13 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
     exportCommand = ffmpeg()
 
     // Add all input files
-    inputFiles.forEach(filePath => {
-      exportCommand!.input(filePath)
+    inputFiles.forEach((filePath, idx) => {
+      if (bgm?.filePath && idx === bgmInputIdx) {
+        // BGM input with infinite loop
+        exportCommand!.input(filePath).inputOptions(['-stream_loop', '-1'])
+      } else {
+        exportCommand!.input(filePath)
+      }
     })
 
     exportCommand

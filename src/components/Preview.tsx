@@ -72,9 +72,12 @@ export function Preview() {
   const setAudioBalance = useEditorStore((state) => state.setAudioBalance)
   const setMainVolume = useEditorStore((state) => state.setMainVolume)
   const setSubVolume = useEditorStore((state) => state.setSubVolume)
+  const bgmFilePath = useEditorStore((state) => state.bgmFilePath)
+  const bgmVolume = useEditorStore((state) => state.bgmVolume)
 
   const mainVideoRef = useRef<HTMLVideoElement>(null)
   const subVideoRef = useRef<HTMLVideoElement>(null)
+  const bgmAudioRef = useRef<HTMLAudioElement>(null)
 
   const [isPlaying, setIsPlaying] = useState(false)
   const isPlayingRef = useRef(false)
@@ -130,6 +133,13 @@ export function Preview() {
     }
   }, [audioBalance, mainVolume, subVolume])
 
+  // Apply BGM volume
+  useEffect(() => {
+    if (bgmAudioRef.current) {
+      bgmAudioRef.current.volume = Math.min(1, bgmVolume)
+    }
+  }, [bgmVolume])
+
   // Seek videos when position changes
   useEffect(() => {
     if (isPlayingRef.current) return
@@ -140,7 +150,11 @@ export function Preview() {
     if (subVideoRef.current && subClip && currentSegment) {
       subVideoRef.current.currentTime = subClip.inPoint + currentSegment.subInPoint + positionInSegment
     }
-  }, [sliderValue, mainClip, subClip, currentSegment, positionInSegment])
+    // Sync BGM position (BGM plays from the start of the output)
+    if (bgmAudioRef.current && bgmFilePath) {
+      bgmAudioRef.current.currentTime = sliderValue
+    }
+  }, [sliderValue, mainClip, subClip, currentSegment, positionInSegment, bgmFilePath])
 
   // Handle segment changes during playback
   useEffect(() => {
@@ -188,6 +202,7 @@ export function Preview() {
     if (isPlaying) {
       mainVideoRef.current?.pause()
       subVideoRef.current?.pause()
+      bgmAudioRef.current?.pause()
       setIsPlaying(false)
       isPlayingRef.current = false
     } else {
@@ -198,6 +213,7 @@ export function Preview() {
         isPlayingRef.current = false
       })
       subVideoRef.current?.play()?.catch(() => {})
+      bgmAudioRef.current?.play()?.catch(() => {})
     }
   }, [isPlaying, segments.length])
 
@@ -214,6 +230,7 @@ export function Preview() {
     if (newGlobalPosition >= duration) {
       mainVideoRef.current.pause()
       subVideoRef.current?.pause()
+      bgmAudioRef.current?.pause()
       setIsPlaying(false)
       isPlayingRef.current = false
       setSliderValue(0)
@@ -233,6 +250,7 @@ export function Preview() {
     if (isPlaying) {
       mainVideoRef.current?.pause()
       subVideoRef.current?.pause()
+      bgmAudioRef.current?.pause()
       setIsPlaying(false)
       isPlayingRef.current = false
     }
@@ -383,6 +401,16 @@ export function Preview() {
           )}
         </div>
       </div>
+
+      {/* Hidden BGM Audio Element */}
+      {bgmFilePath && (
+        <audio
+          ref={bgmAudioRef}
+          src={`local-video://${encodeURIComponent(bgmFilePath)}`}
+          preload="auto"
+          loop
+        />
+      )}
 
       {/* Controls */}
       <div className="flex items-center gap-4 max-w-3xl mx-auto">
