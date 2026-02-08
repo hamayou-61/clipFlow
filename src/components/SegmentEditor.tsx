@@ -7,6 +7,7 @@ const LAYOUT_LABELS: Record<LayoutType, string> = {
   'split-h': '左右分割',
   'split-v': '上下分割',
   'single-main': 'メインのみ',
+  'pip': 'ワイプ',
 }
 
 const LAYOUT_ICONS: Record<LayoutType, JSX.Element> = {
@@ -26,6 +27,12 @@ const LAYOUT_ICONS: Record<LayoutType, JSX.Element> = {
     <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
       <rect x="3" y="4" width="18" height="16" rx="1" />
       <text x="12" y="14" fontSize="8" textAnchor="middle" fill="white">M</text>
+    </svg>
+  ),
+  'pip': (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="3" y="4" width="18" height="16" rx="1" opacity="0.6" />
+      <rect x="13" y="12" width="7" height="6" rx="1" />
     </svg>
   ),
 }

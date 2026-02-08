@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol, net } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, protocol } from 'electron'
 import path from 'path'
 import fs from 'fs'
-import { fileURLToPath, pathToFileURL } from 'url'
+import { fileURLToPath } from 'url'
 import { createRequire } from 'module'
 import ffmpeg from 'fluent-ffmpeg'
 
@@ -321,7 +321,7 @@ ipcMain.handle('video:generateThumbnails', async (_, filePath: string, count: nu
   // Use unique ID instead of filename to avoid special character issues
   const uniqueId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 
-  return new Promise<string[]>((resolve, reject) => {
+  return new Promise<string[]>((resolve) => {
     ffmpeg.ffprobe(filePath, (err, metadata) => {
       if (err) {
         console.error('FFprobe error:', err)

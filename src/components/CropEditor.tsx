@@ -92,6 +92,28 @@ export function CropEditor() {
     updateClip(selectedLaneId, clip.id, { cropScale: newScale })
   }, [clip, selectedLaneId, updateClip])
 
+  // Layout label for display
+  const layoutLabel = useMemo(() => {
+    switch (clipLayoutType) {
+      case 'single-main': return 'フル画面'
+      case 'split-h': return '左右分割'
+      case 'split-v': return '上下分割'
+      case 'pip': return 'ワイプ'
+      default: return ''
+    }
+  }, [clipLayoutType])
+
+  // Target crop aspect ratio based on layout type
+  const targetAspect = useMemo(() => {
+    if (clipLayoutType === 'single-main' || clipLayoutType === 'pip') {
+      return isVertical ? (9 / 16) : (16 / 9)
+    } else if (clipLayoutType === 'split-h') {
+      return isVertical ? (9 / 32) : (8 / 9)
+    } else {
+      return isVertical ? (9 / 8) : (32 / 9)
+    }
+  }, [clipLayoutType, isVertical])
+
   if (!clip || !selectedLaneId) {
     return (
       <section className="p-6 bg-editor-bg">
@@ -120,40 +142,8 @@ export function CropEditor() {
 
   const currentLaneLabel = selectedLaneId === 'main' ? 'メイン' : 'サブ'
 
-  // Layout label for display
-  const layoutLabel = useMemo(() => {
-    switch (clipLayoutType) {
-      case 'single-main': return 'フル画面'
-      case 'split-h': return '左右分割'
-      case 'split-v': return '上下分割'
-      case 'pip': return 'ワイプ'
-      default: return ''
-    }
-  }, [clipLayoutType])
-
   // Source video aspect ratio
   const sourceAspect = clip.width / clip.height
-
-  // Target crop aspect ratio based on layout type:
-  // single-main: Full output aspect (16:9 or 9:16)
-  // split-h: Half width (8:9 for 16:9 output, 9:32 for 9:16 output)
-  // split-v: Half height (32:9 for 16:9 output, 9:8 for 9:16 output)
-  const targetAspect = useMemo(() => {
-    if (clipLayoutType === 'single-main' || clipLayoutType === 'pip') {
-      // Full frame - use output aspect ratio
-      return isVertical ? (9 / 16) : (16 / 9)
-    } else if (clipLayoutType === 'split-h') {
-      // Horizontal split - each video is half width
-      // 16:9 output → 960x1080 = 8:9
-      // 9:16 output → 540x1920 = 9:32
-      return isVertical ? (9 / 32) : (8 / 9)
-    } else {
-      // split-v: Vertical split - each video is half height
-      // 16:9 output → 1920x540 = 32:9
-      // 9:16 output → 1080x960 = 9:8
-      return isVertical ? (9 / 8) : (32 / 9)
-    }
-  }, [clipLayoutType, isVertical])
 
   // Calculate video container size (max 300px wide or 220px tall)
   const maxWidth = 300
