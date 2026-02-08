@@ -261,17 +261,15 @@ electron.ipcMain.handle("video:generateThumbnails", async (_, filePath, count) =
   });
 });
 electron.ipcMain.handle("video:export", async (event, config) => {
-  const { outputPath, aspectRatio, audioBalance, leftVolume, rightVolume, leftClips, rightClips } = config;
-  console.log("Starting export with config:", { outputPath, aspectRatio, audioBalance, leftVolume, rightVolume });
-  console.log("Left clips:", leftClips.length, "Right clips:", rightClips.length);
-  if (leftClips.length === 0 || rightClips.length === 0) {
-    throw new Error("Both lanes must have at least one clip");
+  const { outputPath, aspectRatio, audioBalance, mainVolume, subVolume, segments } = config;
+  console.log("Starting export with config:", { outputPath, aspectRatio, audioBalance, mainVolume, subVolume });
+  console.log("Segments:", segments.length);
+  if (segments.length === 0) {
+    throw new Error("At least one segment is required");
   }
   const isVertical = aspectRatio === "9:16";
   const outputWidth = isVertical ? 1080 : 1920;
   const outputHeight = isVertical ? 1920 : 1080;
-  const videoWidth = isVertical ? outputWidth : outputWidth / 2;
-  const videoHeight = isVertical ? outputHeight / 2 : outputHeight;
   const inputFiles = [];
   const fileToInputIndex = /* @__PURE__ */ new Map();
   const getInputIndex = (filePath) => {
@@ -281,168 +279,133 @@ electron.ipcMain.handle("video:export", async (event, config) => {
     }
     return fileToInputIndex.get(filePath);
   };
-  const leftClipsWithInput = leftClips.map((clip, i) => ({
-    ...clip,
-    inputIndex: getInputIndex(clip.filePath),
-    clipIndex: i
-  }));
-  const rightClipsWithInput = rightClips.map((clip, i) => ({
-    ...clip,
-    inputIndex: getInputIndex(clip.filePath),
-    clipIndex: i
-  }));
-  const leftTotalDuration = leftClips.reduce((sum, c) => sum + (c.outPoint - c.inPoint), 0);
-  const rightTotalDuration = rightClips.reduce((sum, c) => sum + (c.outPoint - c.inPoint), 0);
-  const outputDuration = Math.min(leftTotalDuration, rightTotalDuration);
+  segments.forEach((seg) => {
+    if (seg.mainClip) getInputIndex(seg.mainClip.filePath);
+    if (seg.subClip) getInputIndex(seg.subClip.filePath);
+  });
+  const outputDuration = segments.reduce((sum, seg) => sum + seg.duration, 0);
   console.log("Input files:", inputFiles);
-  console.log("Total duration - Left:", leftTotalDuration, "Right:", rightTotalDuration, "Output:", outputDuration);
+  console.log("Total duration:", outputDuration);
   return new Promise((resolve, reject) => {
-    const stackFilter = isVertical ? "vstack" : "hstack";
-    const topLeftLabel = isVertical ? "top" : "left";
-    const bottomRightLabel = isVertical ? "bottom" : "right";
     const videoFilters = [];
     const audioFilters = [];
-    const leftClipLabels = [];
-    leftClipsWithInput.forEach((clip, i) => {
-      const label = `lv${i}`;
-      const cropScale = clip.cropScale || 1;
-      const scaledWidth = Math.round(videoWidth * cropScale);
-      const scaledHeight = Math.round(videoHeight * cropScale);
-      const sourceAspect = clip.width / clip.height;
-      const targetAspect = videoWidth / videoHeight;
-      const scaleMode = sourceAspect < targetAspect ? "decrease" : "increase";
-      const cropX = `(iw-${videoWidth})/2*(1+${clip.cropX})`;
-      const cropY = `(ih-${videoHeight})/2*(1+${clip.cropY})`;
-      const padX = `(${videoWidth}-iw)/2*(1-${clip.cropX})`;
-      const padY = `(${videoHeight}-ih)/2*(1-${clip.cropY})`;
-      let filterChain = `[${clip.inputIndex}:v]trim=start=${clip.inPoint}:end=${clip.outPoint},setpts=PTS-STARTPTS`;
-      filterChain += `,scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=${scaleMode}`;
-      filterChain += `,crop='min(iw\\,${videoWidth})':'min(ih\\,${videoHeight})':${cropX}:${cropY}`;
-      filterChain += `,pad=${videoWidth}:${videoHeight}:${padX}:${padY}:black`;
-      filterChain += `,setsar=1[${label}]`;
-      videoFilters.push(filterChain);
-      leftClipLabels.push(`[${label}]`);
+    const segmentVideoLabels = [];
+    const segmentAudioLabels = [];
+    const mainBalanceRatio = (100 - audioBalance) / 100;
+    const subBalanceRatio = audioBalance / 100;
+    const mainFinalVol = mainBalanceRatio * mainVolume;
+    const subFinalVol = subBalanceRatio * subVolume;
+    segments.forEach((seg, segIdx) => {
+      const { layoutType, duration, mainClip, subClip, mainInPoint, subInPoint } = seg;
+      let mainTargetWidth, mainTargetHeight;
+      let subTargetWidth, subTargetHeight;
+      if (layoutType === "split-h") {
+        mainTargetWidth = outputWidth / 2;
+        mainTargetHeight = outputHeight;
+        subTargetWidth = outputWidth / 2;
+        subTargetHeight = outputHeight;
+      } else if (layoutType === "split-v") {
+        mainTargetWidth = outputWidth;
+        mainTargetHeight = outputHeight / 2;
+        subTargetWidth = outputWidth;
+        subTargetHeight = outputHeight / 2;
+      } else {
+        mainTargetWidth = outputWidth;
+        mainTargetHeight = outputHeight;
+        subTargetWidth = outputWidth;
+        subTargetHeight = outputHeight;
+      }
+      const buildClipFilter = (clip, inPointOffset, targetWidth, targetHeight, label) => {
+        const inputIdx = getInputIndex(clip.filePath);
+        const cropScale = clip.cropScale || 1;
+        const startTime = clip.inPoint + inPointOffset;
+        const endTime = startTime + duration;
+        const scaledWidth = Math.round(targetWidth * cropScale);
+        const scaledHeight = Math.round(targetHeight * cropScale);
+        const sourceAspect = clip.width / clip.height;
+        const targetAspect = targetWidth / targetHeight;
+        const scaleMode = sourceAspect < targetAspect ? "decrease" : "increase";
+        const cropX = `(iw-${targetWidth})/2*(1+${clip.cropX})`;
+        const cropY = `(ih-${targetHeight})/2*(1+${clip.cropY})`;
+        const padX = `(${targetWidth}-iw)/2*(1-${clip.cropX})`;
+        const padY = `(${targetHeight}-ih)/2*(1-${clip.cropY})`;
+        let filterChain = `[${inputIdx}:v]trim=start=${startTime}:end=${endTime},setpts=PTS-STARTPTS`;
+        filterChain += `,scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=${scaleMode}`;
+        filterChain += `,crop='min(iw\\,${targetWidth})':'min(ih\\,${targetHeight})':${cropX}:${cropY}`;
+        filterChain += `,pad=${targetWidth}:${targetHeight}:${padX}:${padY}:black`;
+        filterChain += `,setsar=1[${label}]`;
+        return filterChain;
+      };
+      const buildAudioFilter = (clip, inPointOffset, label) => {
+        const inputIdx = getInputIndex(clip.filePath);
+        const startTime = clip.inPoint + inPointOffset;
+        const endTime = startTime + duration;
+        return `[${inputIdx}:a]atrim=start=${startTime}:end=${endTime},asetpts=PTS-STARTPTS[${label}]`;
+      };
+      const segVideoLabel = `segv${segIdx}`;
+      const segAudioLabel = `sega${segIdx}`;
+      if (layoutType === "single-main") {
+        if (mainClip) {
+          videoFilters.push(buildClipFilter(mainClip, mainInPoint, outputWidth, outputHeight, segVideoLabel));
+          videoFilters.push(buildAudioFilter(mainClip, mainInPoint, `${segAudioLabel}_main`));
+          audioFilters.push(`[${segAudioLabel}_main]volume=${mainVolume}[${segAudioLabel}]`);
+        } else {
+          videoFilters.push(`color=c=black:s=${outputWidth}x${outputHeight}:d=${duration}[${segVideoLabel}]`);
+          audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${segAudioLabel}]`);
+        }
+      } else if (layoutType === "single-sub") {
+        if (subClip) {
+          videoFilters.push(buildClipFilter(subClip, subInPoint, outputWidth, outputHeight, segVideoLabel));
+          videoFilters.push(buildAudioFilter(subClip, subInPoint, `${segAudioLabel}_sub`));
+          audioFilters.push(`[${segAudioLabel}_sub]volume=${subVolume}[${segAudioLabel}]`);
+        } else {
+          videoFilters.push(`color=c=black:s=${outputWidth}x${outputHeight}:d=${duration}[${segVideoLabel}]`);
+          audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${segAudioLabel}]`);
+        }
+      } else {
+        const stackFilter = layoutType === "split-h" ? "hstack" : "vstack";
+        const mainLabel = `seg${segIdx}_main`;
+        const subLabel = `seg${segIdx}_sub`;
+        if (mainClip) {
+          videoFilters.push(buildClipFilter(mainClip, mainInPoint, mainTargetWidth, mainTargetHeight, mainLabel));
+          videoFilters.push(buildAudioFilter(mainClip, mainInPoint, `${mainLabel}_a`));
+        } else {
+          videoFilters.push(`color=c=black:s=${mainTargetWidth}x${mainTargetHeight}:d=${duration}[${mainLabel}]`);
+          videoFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${mainLabel}_a]`);
+        }
+        if (subClip) {
+          videoFilters.push(buildClipFilter(subClip, subInPoint, subTargetWidth, subTargetHeight, subLabel));
+          videoFilters.push(buildAudioFilter(subClip, subInPoint, `${subLabel}_a`));
+        } else {
+          videoFilters.push(`color=c=black:s=${subTargetWidth}x${subTargetHeight}:d=${duration}[${subLabel}]`);
+          videoFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${subLabel}_a]`);
+        }
+        videoFilters.push(`[${mainLabel}][${subLabel}]${stackFilter}=inputs=2[${segVideoLabel}]`);
+        if (audioBalance === 0) {
+          audioFilters.push(`[${mainLabel}_a]volume=${mainVolume}[${segAudioLabel}]`);
+        } else if (audioBalance === 100) {
+          audioFilters.push(`[${subLabel}_a]volume=${subVolume}[${segAudioLabel}]`);
+        } else {
+          audioFilters.push(
+            `[${mainLabel}_a]volume=${mainFinalVol}[${mainLabel}_avol]`,
+            `[${subLabel}_a]volume=${subFinalVol}[${subLabel}_avol]`,
+            `[${mainLabel}_avol][${subLabel}_avol]amix=inputs=2:duration=shortest:normalize=0[${segAudioLabel}]`
+          );
+        }
+      }
+      segmentVideoLabels.push(`[${segVideoLabel}]`);
+      segmentAudioLabels.push(`[${segAudioLabel}]`);
     });
-    let leftFinalLabel;
-    if (leftClipLabels.length > 1) {
-      leftFinalLabel = `${topLeftLabel}concat`;
+    if (segments.length > 1) {
       videoFilters.push(
-        `${leftClipLabels.join("")}concat=n=${leftClipLabels.length}:v=1:a=0[${leftFinalLabel}]`
+        `${segmentVideoLabels.join("")}concat=n=${segments.length}:v=1:a=0[vout]`
       );
-    } else {
-      leftFinalLabel = `lv0`;
-    }
-    const rightClipLabels = [];
-    rightClipsWithInput.forEach((clip, i) => {
-      const label = `rv${i}`;
-      const cropScale = clip.cropScale || 1;
-      const scaledWidth = Math.round(videoWidth * cropScale);
-      const scaledHeight = Math.round(videoHeight * cropScale);
-      const sourceAspect = clip.width / clip.height;
-      const targetAspect = videoWidth / videoHeight;
-      const scaleMode = sourceAspect < targetAspect ? "decrease" : "increase";
-      const cropX = `(iw-${videoWidth})/2*(1+${clip.cropX})`;
-      const cropY = `(ih-${videoHeight})/2*(1+${clip.cropY})`;
-      const padX = `(${videoWidth}-iw)/2*(1-${clip.cropX})`;
-      const padY = `(${videoHeight}-ih)/2*(1-${clip.cropY})`;
-      let filterChain = `[${clip.inputIndex}:v]trim=start=${clip.inPoint}:end=${clip.outPoint},setpts=PTS-STARTPTS`;
-      filterChain += `,scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=${scaleMode}`;
-      filterChain += `,crop='min(iw\\,${videoWidth})':'min(ih\\,${videoHeight})':${cropX}:${cropY}`;
-      filterChain += `,pad=${videoWidth}:${videoHeight}:${padX}:${padY}:black`;
-      filterChain += `,setsar=1[${label}]`;
-      videoFilters.push(filterChain);
-      rightClipLabels.push(`[${label}]`);
-    });
-    let rightFinalLabel;
-    if (rightClipLabels.length > 1) {
-      rightFinalLabel = `${bottomRightLabel}concat`;
-      videoFilters.push(
-        `${rightClipLabels.join("")}concat=n=${rightClipLabels.length}:v=1:a=0[${rightFinalLabel}]`
-      );
-    } else {
-      rightFinalLabel = `rv0`;
-    }
-    videoFilters.push(
-      `[${leftFinalLabel}][${rightFinalLabel}]${stackFilter}=inputs=2,scale=${outputWidth}:${outputHeight}[vout]`
-    );
-    const leftBalanceRatio = (100 - audioBalance) / 100;
-    const rightBalanceRatio = audioBalance / 100;
-    const leftFinalVol = leftBalanceRatio * leftVolume;
-    const rightFinalVol = rightBalanceRatio * rightVolume;
-    if (audioBalance === 0) {
-      const leftAudioLabels = [];
-      leftClipsWithInput.forEach((clip, i) => {
-        const label = `la${i}`;
-        audioFilters.push(
-          `[${clip.inputIndex}:a]atrim=start=${clip.inPoint}:end=${clip.outPoint},asetpts=PTS-STARTPTS[${label}]`
-        );
-        leftAudioLabels.push(`[${label}]`);
-      });
-      if (leftAudioLabels.length > 1) {
-        audioFilters.push(
-          `${leftAudioLabels.join("")}concat=n=${leftAudioLabels.length}:v=0:a=1[laconcat]`
-        );
-        audioFilters.push(`[laconcat]volume=${leftVolume}[aout]`);
-      } else {
-        audioFilters.push(`[la0]volume=${leftVolume}[aout]`);
-      }
-    } else if (audioBalance === 100) {
-      const rightAudioLabels = [];
-      rightClipsWithInput.forEach((clip, i) => {
-        const label = `ra${i}`;
-        audioFilters.push(
-          `[${clip.inputIndex}:a]atrim=start=${clip.inPoint}:end=${clip.outPoint},asetpts=PTS-STARTPTS[${label}]`
-        );
-        rightAudioLabels.push(`[${label}]`);
-      });
-      if (rightAudioLabels.length > 1) {
-        audioFilters.push(
-          `${rightAudioLabels.join("")}concat=n=${rightAudioLabels.length}:v=0:a=1[raconcat]`
-        );
-        audioFilters.push(`[raconcat]volume=${rightVolume}[aout]`);
-      } else {
-        audioFilters.push(`[ra0]volume=${rightVolume}[aout]`);
-      }
-    } else {
-      const leftAudioLabels = [];
-      leftClipsWithInput.forEach((clip, i) => {
-        const label = `la${i}`;
-        audioFilters.push(
-          `[${clip.inputIndex}:a]atrim=start=${clip.inPoint}:end=${clip.outPoint},asetpts=PTS-STARTPTS[${label}]`
-        );
-        leftAudioLabels.push(`[${label}]`);
-      });
-      let leftAudioFinal;
-      if (leftAudioLabels.length > 1) {
-        leftAudioFinal = "laconcat";
-        audioFilters.push(
-          `${leftAudioLabels.join("")}concat=n=${leftAudioLabels.length}:v=0:a=1[${leftAudioFinal}]`
-        );
-      } else {
-        leftAudioFinal = "la0";
-      }
-      const rightAudioLabels = [];
-      rightClipsWithInput.forEach((clip, i) => {
-        const label = `ra${i}`;
-        audioFilters.push(
-          `[${clip.inputIndex}:a]atrim=start=${clip.inPoint}:end=${clip.outPoint},asetpts=PTS-STARTPTS[${label}]`
-        );
-        rightAudioLabels.push(`[${label}]`);
-      });
-      let rightAudioFinal;
-      if (rightAudioLabels.length > 1) {
-        rightAudioFinal = "raconcat";
-        audioFilters.push(
-          `${rightAudioLabels.join("")}concat=n=${rightAudioLabels.length}:v=0:a=1[${rightAudioFinal}]`
-        );
-      } else {
-        rightAudioFinal = "ra0";
-      }
       audioFilters.push(
-        `[${leftAudioFinal}]volume=${leftFinalVol}[lavol]`,
-        `[${rightAudioFinal}]volume=${rightFinalVol}[ravol]`,
-        `[lavol][ravol]amix=inputs=2:duration=shortest:normalize=0[aout]`
+        `${segmentAudioLabels.join("")}concat=n=${segments.length}:v=0:a=1[aout]`
       );
+    } else {
+      videoFilters.push(`[segv0]copy[vout]`);
+      audioFilters.push(`[sega0]acopy[aout]`);
     }
     const filterComplex = [...videoFilters, ...audioFilters].join(";");
     console.log("Filter complex:", filterComplex);

@@ -1,73 +1,58 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime } from '../utils/format'
-import type { Clip } from '../types'
-
-// Helper to find which clip and position within it for a given global position
-function findClipAtPosition(clips: Clip[], globalPosition: number): { clip: Clip; localPosition: number; clipIndex: number } | null {
-  let accumulated = 0
-  for (let i = 0; i < clips.length; i++) {
-    const clip = clips[i]
-    const clipDuration = clip.outPoint - clip.inPoint
-    if (globalPosition < accumulated + clipDuration) {
-      return {
-        clip,
-        localPosition: globalPosition - accumulated,
-        clipIndex: i
-      }
-    }
-    accumulated += clipDuration
-  }
-  // If position exceeds total, return last clip at its end
-  if (clips.length > 0) {
-    const lastClip = clips[clips.length - 1]
-    return {
-      clip: lastClip,
-      localPosition: lastClip.outPoint - lastClip.inPoint,
-      clipIndex: clips.length - 1
-    }
-  }
-  return null
-}
 
 export function Preview() {
-  const leftLane = useEditorStore((state) => state.leftLane)
-  const rightLane = useEditorStore((state) => state.rightLane)
+  const mainLane = useEditorStore((state) => state.mainLane)
+  const subLane = useEditorStore((state) => state.subLane)
+  const segments = useEditorStore((state) => state.segments)
   const previewPosition = useEditorStore((state) => state.previewPosition)
   const setPreviewPosition = useEditorStore((state) => state.setPreviewPosition)
   const aspectRatio = useEditorStore((state) => state.aspectRatio)
   const getOutputDuration = useEditorStore((state) => state.getOutputDuration)
+  const getSegmentAtPosition = useEditorStore((state) => state.getSegmentAtPosition)
   const audioBalance = useEditorStore((state) => state.audioBalance)
-  const leftVolume = useEditorStore((state) => state.leftVolume)
-  const rightVolume = useEditorStore((state) => state.rightVolume)
+  const mainVolume = useEditorStore((state) => state.mainVolume)
+  const subVolume = useEditorStore((state) => state.subVolume)
   const setAudioBalance = useEditorStore((state) => state.setAudioBalance)
-  const setLeftVolume = useEditorStore((state) => state.setLeftVolume)
-  const setRightVolume = useEditorStore((state) => state.setRightVolume)
+  const setMainVolume = useEditorStore((state) => state.setMainVolume)
+  const setSubVolume = useEditorStore((state) => state.setSubVolume)
 
-  const leftVideoRef = useRef<HTMLVideoElement>(null)
-  const rightVideoRef = useRef<HTMLVideoElement>(null)
+  const mainVideoRef = useRef<HTMLVideoElement>(null)
+  const subVideoRef = useRef<HTMLVideoElement>(null)
 
   const [isPlaying, setIsPlaying] = useState(false)
-  const isPlayingRef = useRef(false) // Sync ref for effects
-
-  // Local slider position - always controlled locally
+  const isPlayingRef = useRef(false)
   const [sliderValue, setSliderValue] = useState(0)
   const isDraggingRef = useRef(false)
+  const prevSegmentIdRef = useRef<string | null>(null)
 
-  // Track current clip indices to detect clip changes
-  const [currentLeftClipIndex, setCurrentLeftClipIndex] = useState(0)
-  const [currentRightClipIndex, setCurrentRightClipIndex] = useState(0)
-
-  const leftClips = leftLane.clips
-  const rightClips = rightLane.clips
-  const hasClips = leftClips.length > 0 && rightClips.length > 0
-
-  // Calculate total duration
   const duration = getOutputDuration()
+  const currentSegment = getSegmentAtPosition(sliderValue)
 
-  // Find current clips based on slider position
-  const leftClipInfo = useMemo(() => findClipAtPosition(leftClips, sliderValue), [leftClips, sliderValue])
-  const rightClipInfo = useMemo(() => findClipAtPosition(rightClips, sliderValue), [rightClips, sliderValue])
+  // Get clips for current segment
+  const mainClip = useMemo(() => {
+    if (!currentSegment?.mainClipId) return null
+    return mainLane.clips.find(c => c.id === currentSegment.mainClipId) || null
+  }, [currentSegment, mainLane.clips])
+
+  const subClip = useMemo(() => {
+    if (!currentSegment?.subClipId) return null
+    return subLane.clips.find(c => c.id === currentSegment.subClipId) || null
+  }, [currentSegment, subLane.clips])
+
+  // Calculate position within segment
+  const segmentStartPosition = useMemo(() => {
+    if (!currentSegment) return 0
+    let pos = 0
+    for (const seg of segments) {
+      if (seg.id === currentSegment.id) break
+      pos += seg.duration
+    }
+    return pos
+  }, [currentSegment, segments])
+
+  const positionInSegment = sliderValue - segmentStartPosition
 
   // Sync slider value FROM store when not dragging
   useEffect(() => {
@@ -76,209 +61,126 @@ export function Preview() {
     }
   }, [previewPosition])
 
-  // Store pending seek positions for when video becomes ready
-  const pendingLeftSeek = useRef<number | null>(null)
-  const pendingRightSeek = useRef<number | null>(null)
-
-  // Seek video to correct position
-  const seekLeftVideo = useCallback(() => {
-    if (!leftVideoRef.current || !leftClipInfo) return
-    const targetTime = leftClipInfo.clip.inPoint + leftClipInfo.localPosition
-
-    // readyState: 0=HAVE_NOTHING, 1=HAVE_METADATA, 2=HAVE_CURRENT_DATA, 3=HAVE_FUTURE_DATA, 4=HAVE_ENOUGH_DATA
-    if (leftVideoRef.current.readyState >= 1) {
-      leftVideoRef.current.currentTime = targetTime
-      pendingLeftSeek.current = null
-    } else {
-      pendingLeftSeek.current = targetTime
-    }
-  }, [leftClipInfo])
-
-  const seekRightVideo = useCallback(() => {
-    if (!rightVideoRef.current || !rightClipInfo) return
-    const targetTime = rightClipInfo.clip.inPoint + rightClipInfo.localPosition
-
-    if (rightVideoRef.current.readyState >= 1) {
-      rightVideoRef.current.currentTime = targetTime
-      pendingRightSeek.current = null
-    } else {
-      pendingRightSeek.current = targetTime
-    }
-  }, [rightClipInfo])
-
-  // Update video positions when slider moves (but NOT during playback)
+  // Apply volume to video elements
   useEffect(() => {
-    if (!leftVideoRef.current || !leftClipInfo) return
+    const mainBalanceRatio = (100 - audioBalance) / 100
+    const subBalanceRatio = audioBalance / 100
 
-    // Don't seek during playback - let the video play naturally
+    if (mainVideoRef.current) {
+      mainVideoRef.current.volume = Math.min(1, mainBalanceRatio * mainVolume)
+    }
+    if (subVideoRef.current) {
+      subVideoRef.current.volume = Math.min(1, subBalanceRatio * subVolume)
+    }
+  }, [audioBalance, mainVolume, subVolume])
+
+  // Seek videos when position changes
+  useEffect(() => {
     if (isPlayingRef.current) return
 
-    // Check if we need to change video source
-    if (currentLeftClipIndex !== leftClipInfo.clipIndex) {
-      setCurrentLeftClipIndex(leftClipInfo.clipIndex)
-      // Video source will change, seek will happen in onLoadedMetadata
-    } else {
-      // Same video, just seek
-      seekLeftVideo()
+    if (mainVideoRef.current && mainClip && currentSegment) {
+      mainVideoRef.current.currentTime = mainClip.inPoint + currentSegment.mainInPoint + positionInSegment
     }
-  }, [leftClipInfo, currentLeftClipIndex, seekLeftVideo])
+    if (subVideoRef.current && subClip && currentSegment) {
+      subVideoRef.current.currentTime = subClip.inPoint + currentSegment.subInPoint + positionInSegment
+    }
+  }, [sliderValue, mainClip, subClip, currentSegment, positionInSegment])
 
+  // Handle segment changes during playback
   useEffect(() => {
-    if (!rightVideoRef.current || !rightClipInfo) return
+    const currentSegmentId = currentSegment?.id || null
 
-    // Don't seek during playback - let the video play naturally
-    if (isPlayingRef.current) return
+    // If segment changed and we were playing, resume playback on new videos
+    if (prevSegmentIdRef.current !== currentSegmentId && isPlayingRef.current) {
+      const resumePlayback = async () => {
+        // Seek to correct position first
+        if (mainVideoRef.current && mainClip && currentSegment) {
+          mainVideoRef.current.currentTime = mainClip.inPoint + currentSegment.mainInPoint + positionInSegment
+        }
+        if (subVideoRef.current && subClip && currentSegment) {
+          subVideoRef.current.currentTime = subClip.inPoint + currentSegment.subInPoint + positionInSegment
+        }
 
-    // Check if we need to change video source
-    if (currentRightClipIndex !== rightClipInfo.clipIndex) {
-      setCurrentRightClipIndex(rightClipInfo.clipIndex)
-      // Video source will change, seek will happen in onLoadedMetadata
-    } else {
-      // Same video, just seek
-      seekRightVideo()
-    }
-  }, [rightClipInfo, currentRightClipIndex, seekRightVideo])
+        // Resume playing
+        try {
+          await mainVideoRef.current?.play()
+          await subVideoRef.current?.play()
+        } catch {
+          // Video might not be ready yet, try again after a short delay
+          setTimeout(async () => {
+            try {
+              await mainVideoRef.current?.play()
+              await subVideoRef.current?.play()
+            } catch {
+              setIsPlaying(false)
+              isPlayingRef.current = false
+            }
+          }, 100)
+        }
+      }
 
-  // Handle video metadata loaded - seek to correct position and set volume
-  const handleLeftLoadedMetadata = useCallback(() => {
-    if (leftVideoRef.current) {
-      // Apply volume on load
-      leftVideoRef.current.volume = Math.min(1, ((100 - audioBalance) / 100) * leftVolume)
+      resumePlayback()
     }
-    // Apply pending seek if exists
-    if (pendingLeftSeek.current !== null && leftVideoRef.current) {
-      leftVideoRef.current.currentTime = pendingLeftSeek.current
-      pendingLeftSeek.current = null
-    } else {
-      seekLeftVideo()
-    }
-  }, [seekLeftVideo, audioBalance, leftVolume])
 
-  const handleRightLoadedMetadata = useCallback(() => {
-    if (rightVideoRef.current) {
-      // Apply volume on load
-      rightVideoRef.current.volume = Math.min(1, (audioBalance / 100) * rightVolume)
-    }
-    if (pendingRightSeek.current !== null && rightVideoRef.current) {
-      rightVideoRef.current.currentTime = pendingRightSeek.current
-      pendingRightSeek.current = null
-    } else {
-      seekRightVideo()
-    }
-  }, [seekRightVideo, audioBalance, rightVolume])
-
-  // Handle canplay - video has enough data to play
-  const handleLeftCanPlay = useCallback(() => {
-    if (pendingLeftSeek.current !== null && leftVideoRef.current) {
-      leftVideoRef.current.currentTime = pendingLeftSeek.current
-      pendingLeftSeek.current = null
-    }
-  }, [])
-
-  const handleRightCanPlay = useCallback(() => {
-    if (pendingRightSeek.current !== null && rightVideoRef.current) {
-      rightVideoRef.current.currentTime = pendingRightSeek.current
-      pendingRightSeek.current = null
-    }
-  }, [])
+    prevSegmentIdRef.current = currentSegmentId
+  }, [currentSegment, mainClip, subClip, positionInSegment])
 
   // Handle play/pause
   const togglePlay = useCallback(() => {
-    if (!hasClips) return
+    if (segments.length === 0) return
 
     if (isPlaying) {
-      leftVideoRef.current?.pause()
-      rightVideoRef.current?.pause()
+      mainVideoRef.current?.pause()
+      subVideoRef.current?.pause()
       setIsPlaying(false)
       isPlayingRef.current = false
     } else {
-      // Seek to correct position before playing
-      if (leftVideoRef.current && leftClipInfo && leftVideoRef.current.readyState >= 1) {
-        const leftTargetTime = leftClipInfo.clip.inPoint + leftClipInfo.localPosition
-        leftVideoRef.current.currentTime = leftTargetTime
-      }
-      if (rightVideoRef.current && rightClipInfo && rightVideoRef.current.readyState >= 1) {
-        const rightTargetTime = rightClipInfo.clip.inPoint + rightClipInfo.localPosition
-        rightVideoRef.current.currentTime = rightTargetTime
-      }
-
-      // Set playing state BEFORE calling play() to prevent seek loop
       setIsPlaying(true)
       isPlayingRef.current = true
-
-      leftVideoRef.current?.play()?.catch(() => {
+      mainVideoRef.current?.play()?.catch(() => {
         setIsPlaying(false)
         isPlayingRef.current = false
       })
-      rightVideoRef.current?.play()?.catch(() => {})
+      subVideoRef.current?.play()?.catch(() => {})
     }
-  }, [isPlaying, hasClips, leftClipInfo, rightClipInfo])
+  }, [isPlaying, segments.length])
 
-  // Handle time update from video (only when playing)
+  // Handle time update from video
   const handleTimeUpdate = useCallback(() => {
-    if (!leftVideoRef.current || !leftClipInfo || !isPlayingRef.current || isDraggingRef.current) {
+    if (!mainVideoRef.current || !isPlayingRef.current || isDraggingRef.current) return
+    if (!currentSegment || !mainClip) return
+
+    const videoTime = mainVideoRef.current.currentTime
+    const clipStartTime = mainClip.inPoint + currentSegment.mainInPoint
+    const newPositionInSegment = videoTime - clipStartTime
+    const newGlobalPosition = segmentStartPosition + newPositionInSegment
+
+    if (newGlobalPosition >= duration) {
+      mainVideoRef.current.pause()
+      subVideoRef.current?.pause()
+      setIsPlaying(false)
+      isPlayingRef.current = false
+      setSliderValue(0)
+      setPreviewPosition(0)
       return
     }
 
-    // Calculate global position from current video time
-    let globalPosition = 0
-    for (let i = 0; i < leftClipInfo.clipIndex; i++) {
-      globalPosition += leftClips[i].outPoint - leftClips[i].inPoint
-    }
-    globalPosition += leftVideoRef.current.currentTime - leftClipInfo.clip.inPoint
-
-    // Clamp to duration
-    globalPosition = Math.max(0, Math.min(globalPosition, duration))
-
-    setSliderValue(globalPosition)
-    setPreviewPosition(globalPosition)
-
-    // Check if current clip ended
-    if (leftVideoRef.current.currentTime >= leftClipInfo.clip.outPoint) {
-      // Check if there's a next clip
-      const nextClipIndex = leftClipInfo.clipIndex + 1
-      if (nextClipIndex < leftClips.length) {
-        // Move to next clip
-        setCurrentLeftClipIndex(nextClipIndex)
-        setCurrentRightClipIndex(Math.min(nextClipIndex, rightClips.length - 1))
-      } else {
-        // End of all clips
-        leftVideoRef.current.pause()
-        rightVideoRef.current?.pause()
-        setIsPlaying(false)
-        isPlayingRef.current = false
-        setSliderValue(0)
-        setPreviewPosition(0)
-      }
-    }
-  }, [leftClipInfo, leftClips, rightClips, setPreviewPosition, duration])
+    setSliderValue(newGlobalPosition)
+    setPreviewPosition(newGlobalPosition)
+  }, [currentSegment, mainClip, segmentStartPosition, duration, setPreviewPosition])
 
   // Slider handlers
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = parseFloat(e.target.value)
     setSliderValue(value)
 
-    // Pause while dragging
     if (isPlaying) {
-      leftVideoRef.current?.pause()
-      rightVideoRef.current?.pause()
+      mainVideoRef.current?.pause()
+      subVideoRef.current?.pause()
       setIsPlaying(false)
       isPlayingRef.current = false
     }
-
-    // Immediately seek videos to new position
-    const newLeftClipInfo = findClipAtPosition(leftClips, value)
-    const newRightClipInfo = findClipAtPosition(rightClips, value)
-
-    if (leftVideoRef.current && newLeftClipInfo) {
-      const targetTime = newLeftClipInfo.clip.inPoint + newLeftClipInfo.localPosition
-      leftVideoRef.current.currentTime = targetTime
-    }
-    if (rightVideoRef.current && newRightClipInfo) {
-      const targetTime = newRightClipInfo.clip.inPoint + newRightClipInfo.localPosition
-      rightVideoRef.current.currentTime = targetTime
-    }
-  }, [isPlaying, leftClips, rightClips])
+  }, [isPlaying])
 
   const handleSliderMouseDown = () => {
     isDraggingRef.current = true
@@ -286,11 +188,10 @@ export function Preview() {
 
   const handleSliderMouseUp = () => {
     isDraggingRef.current = false
-    // Sync to store
     setPreviewPosition(sliderValue)
   }
 
-  // Global mouseup to catch release outside slider
+  // Global mouseup
   useEffect(() => {
     const handleGlobalMouseUp = () => {
       if (isDraggingRef.current) {
@@ -306,21 +207,6 @@ export function Preview() {
     }
   }, [sliderValue, setPreviewPosition])
 
-  // Stop playback and reset when clips change
-  useEffect(() => {
-    if (isPlaying) {
-      leftVideoRef.current?.pause()
-      rightVideoRef.current?.pause()
-      setIsPlaying(false)
-      isPlayingRef.current = false
-    }
-    // Reset slider when clips change
-    setSliderValue(0)
-    setCurrentLeftClipIndex(0)
-    setCurrentRightClipIndex(0)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leftClips.length, rightClips.length])
-
   // Keyboard controls
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -334,125 +220,114 @@ export function Preview() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [togglePlay])
 
-  const isHorizontal = aspectRatio === '16:9'
+  const hasSegments = segments.length > 0
+  const layoutType = currentSegment?.layoutType || 'split-h'
+  const isHorizontalOutput = aspectRatio === '16:9'
   const displayValue = Math.min(sliderValue, duration > 0 ? duration : 1)
 
-  // Calculate actual volumes based on balance and individual gains
-  // audioBalance: 0 = left only, 50 = equal, 100 = right only
-  // HTML5 video volume is 0-1, so we need to clamp
-  const leftBalanceRatio = (100 - audioBalance) / 100
-  const rightBalanceRatio = audioBalance / 100
-  const actualLeftVolume = Math.min(1, leftBalanceRatio * leftVolume)
-  const actualRightVolume = Math.min(1, rightBalanceRatio * rightVolume)
+  // Determine preview layout
+  const isSplit = layoutType === 'split-h' || layoutType === 'split-v'
+  const showMain = true // All layouts show main
+  const showSub = layoutType !== 'single-main'
+  const isHorizontalSplit = layoutType === 'split-h'
 
-  // Apply volume to video elements
-  useEffect(() => {
-    if (leftVideoRef.current) {
-      leftVideoRef.current.volume = actualLeftVolume
+  // Calculate preview dimensions
+  const getPreviewStyle = () => {
+    if (!isSplit) {
+      // Single mode - full preview
+      return {
+        container: isHorizontalOutput
+          ? { width: '480px', height: '270px' }
+          : { width: '180px', height: '320px' },
+        main: { width: '100%', height: '100%' },
+        sub: { width: '100%', height: '100%' },
+      }
+    } else if (isHorizontalSplit) {
+      // Split horizontal (side by side)
+      return {
+        container: isHorizontalOutput
+          ? { width: '480px', height: '270px', flexDirection: 'row' as const }
+          : { width: '180px', height: '320px', flexDirection: 'row' as const },
+        main: { width: '50%', height: '100%' },
+        sub: { width: '50%', height: '100%' },
+      }
+    } else {
+      // Split vertical (stacked)
+      return {
+        container: isHorizontalOutput
+          ? { width: '480px', height: '270px', flexDirection: 'column' as const }
+          : { width: '180px', height: '320px', flexDirection: 'column' as const },
+        main: { width: '100%', height: '50%' },
+        sub: { width: '100%', height: '50%' },
+      }
     }
-    if (rightVideoRef.current) {
-      rightVideoRef.current.volume = actualRightVolume
-    }
-  }, [actualLeftVolume, actualRightVolume])
+  }
 
-  // Get current video sources
-  const leftVideoSrc = leftClipInfo ? `local-video://${encodeURIComponent(leftClipInfo.clip.filePath)}` : ''
-  const rightVideoSrc = rightClipInfo ? `local-video://${encodeURIComponent(rightClipInfo.clip.filePath)}` : ''
-
-  // Get current clips directly from the array (not from memoized info) to ensure crop updates are reflected
-  const currentLeftClip = leftClipInfo ? leftClips[leftClipInfo.clipIndex] : null
-  const currentRightClip = rightClipInfo ? rightClips[rightClipInfo.clipIndex] : null
-
-  // For 16:9 combined output: each video is 8:9 (half width of 16:9)
-  // For 9:16 combined output: each video is 9:8 (half height of 9:16)
-  // This ensures the combined preview has the correct aspect ratio
+  const previewStyle = getPreviewStyle()
 
   return (
     <section className="p-6 bg-editor-surface border-b border-editor-border">
-      {/* Preview Area - Combined aspect ratio matches output */}
-      <div className={`
-        flex justify-center mb-4
-        ${isHorizontal ? 'flex-row' : 'flex-col items-center'}
-      `}>
-        {/* Top/Left Video - 8:9 for horizontal, 9:8 for vertical */}
+      {/* Layout indicator */}
+      {currentSegment && (
+        <div className="text-center text-xs text-gray-500 mb-2">
+          レイアウト: {layoutType === 'split-h' ? '左右分割' :
+                      layoutType === 'split-v' ? '上下分割' :
+                      layoutType === 'single-main' ? 'メインのみ' : 'サブのみ'}
+        </div>
+      )}
+
+      {/* Preview Area */}
+      <div className="flex justify-center mb-4">
         <div
-          className={`
-            bg-editor-bg overflow-hidden relative
-            ${isHorizontal ? 'rounded-l-lg' : 'rounded-t-lg'}
-          `}
-          style={{
-            width: isHorizontal ? '240px' : '180px',
-            height: isHorizontal ? '270px' : '160px',
-          }}
+          className="flex rounded-lg overflow-hidden bg-editor-bg"
+          style={previewStyle.container}
         >
-          {leftClips.length > 0 && currentLeftClip ? (
-            <div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-black">
-              {(() => {
-                // Target aspect: 8/9 for horizontal, 9/8 for vertical
-                const targetAspect = isHorizontal ? (8 / 9) : (9 / 8)
-                const sourceAspect = currentLeftClip.width / currentLeftClip.height
-                // If source is "taller" (vertical), use contain (height 100%)
-                const useContain = sourceAspect < targetAspect
-                return (
-                  <video
-                    key={`left-${currentLeftClip.id}`}
-                    ref={leftVideoRef}
-                    src={leftVideoSrc}
-                    className={useContain ? 'h-full w-auto' : 'min-w-full min-h-full object-cover'}
-                    style={{
-                      transform: `scale(${currentLeftClip.cropScale ?? 1}) translate(${-currentLeftClip.cropX * 25}%, ${-currentLeftClip.cropY * 25}%)`
-                    }}
-                    preload="auto"
-                    onLoadedMetadata={handleLeftLoadedMetadata}
-                    onCanPlay={handleLeftCanPlay}
-                    onTimeUpdate={handleTimeUpdate}
-                  />
-                )
-              })()}
-            </div>
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-gray-500">
-              <p className="text-sm">{isHorizontal ? '左' : '上'}のクリップを追加</p>
+          {/* Main Video */}
+          {showMain && (
+            <div
+              className="relative bg-black overflow-hidden"
+              style={previewStyle.main}
+            >
+              {mainClip ? (
+                <video
+                  ref={mainVideoRef}
+                  src={`local-video://${encodeURIComponent(mainClip.filePath)}`}
+                  className="w-full h-full object-cover"
+                  style={{
+                    transform: `scale(${mainClip.cropScale ?? 1}) translate(${-mainClip.cropX * 25}%, ${-mainClip.cropY * 25}%)`
+                  }}
+                  preload="auto"
+                  onTimeUpdate={handleTimeUpdate}
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-gray-500 text-sm">
+                  メイン
+                </div>
+              )}
             </div>
           )}
-        </div>
 
-        {/* Bottom/Right Video - 8:9 for horizontal, 9:8 for vertical */}
-        <div
-          className={`
-            bg-editor-bg overflow-hidden relative
-            ${isHorizontal ? 'rounded-r-lg' : 'rounded-b-lg'}
-          `}
-          style={{
-            width: isHorizontal ? '240px' : '180px',
-            height: isHorizontal ? '270px' : '160px',
-          }}
-        >
-          {rightClips.length > 0 && currentRightClip ? (
-            <div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-black">
-              {(() => {
-                const targetAspect = isHorizontal ? (8 / 9) : (9 / 8)
-                const sourceAspect = currentRightClip.width / currentRightClip.height
-                const useContain = sourceAspect < targetAspect
-                return (
-                  <video
-                    key={`right-${currentRightClip.id}`}
-                    ref={rightVideoRef}
-                    src={rightVideoSrc}
-                    className={useContain ? 'h-full w-auto' : 'min-w-full min-h-full object-cover'}
-                    style={{
-                      transform: `scale(${currentRightClip.cropScale ?? 1}) translate(${-currentRightClip.cropX * 25}%, ${-currentRightClip.cropY * 25}%)`
-                    }}
-                    preload="auto"
-                    onLoadedMetadata={handleRightLoadedMetadata}
-                    onCanPlay={handleRightCanPlay}
-                  />
-                )
-              })()}
-            </div>
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-gray-500">
-              <p className="text-sm">{isHorizontal ? '右' : '下'}のクリップを追加</p>
+          {/* Sub Video */}
+          {showSub && (
+            <div
+              className="relative bg-black overflow-hidden"
+              style={previewStyle.sub}
+            >
+              {subClip ? (
+                <video
+                  ref={subVideoRef}
+                  src={`local-video://${encodeURIComponent(subClip.filePath)}`}
+                  className="w-full h-full object-cover"
+                  style={{
+                    transform: `scale(${subClip.cropScale ?? 1}) translate(${-subClip.cropX * 25}%, ${-subClip.cropY * 25}%)`
+                  }}
+                  preload="auto"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-gray-500 text-sm">
+                  サブ
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -463,10 +338,10 @@ export function Preview() {
         {/* Play/Pause Button */}
         <button
           onClick={togglePlay}
-          disabled={!hasClips}
+          disabled={!hasSegments}
           className={`
             w-10 h-10 rounded-full flex items-center justify-center transition-colors
-            ${hasClips
+            ${hasSegments
               ? 'bg-editor-accent hover:bg-editor-accent-hover text-white'
               : 'bg-editor-border text-gray-600 cursor-not-allowed'
             }
@@ -496,7 +371,7 @@ export function Preview() {
           onMouseUp={handleSliderMouseUp}
           onTouchStart={handleSliderMouseDown}
           onTouchEnd={handleSliderMouseUp}
-          disabled={!hasClips || duration <= 0}
+          disabled={!hasSegments || duration <= 0}
           className="flex-1 h-2 rounded-lg cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
             background: duration > 0
@@ -512,30 +387,30 @@ export function Preview() {
       </div>
 
       {/* Volume Controls */}
-      {hasClips && (
+      {hasSegments && (
         <div className="mt-4 max-w-3xl mx-auto">
           <div className="flex items-center gap-6 text-xs">
-            {/* Left Volume */}
+            {/* Main Volume */}
             <div className="flex items-center gap-2 flex-1">
-              <span className="text-gray-500 w-8">{isHorizontal ? '左' : '上'}</span>
+              <span className="text-gray-500 w-12">メイン</span>
               <input
                 type="range"
                 min={0}
                 max={2}
                 step={0.05}
-                value={leftVolume}
-                onChange={(e) => setLeftVolume(parseFloat(e.target.value))}
+                value={mainVolume}
+                onChange={(e) => setMainVolume(parseFloat(e.target.value))}
                 className="flex-1 h-1.5 rounded-lg cursor-pointer"
                 style={{
-                  background: `linear-gradient(to right, #3b82f6 ${(leftVolume / 2) * 100}%, #3a3a3a ${(leftVolume / 2) * 100}%)`
+                  background: `linear-gradient(to right, #3b82f6 ${(mainVolume / 2) * 100}%, #3a3a3a ${(mainVolume / 2) * 100}%)`
                 }}
               />
-              <span className="text-gray-400 w-10 text-right">{Math.round(leftVolume * 100)}%</span>
+              <span className="text-gray-400 w-10 text-right">{Math.round(mainVolume * 100)}%</span>
             </div>
 
             {/* Balance */}
             <div className="flex items-center gap-2">
-              <span className="text-gray-500">L</span>
+              <span className="text-gray-500">M</span>
               <input
                 type="range"
                 min={0}
@@ -548,34 +423,34 @@ export function Preview() {
                   background: `linear-gradient(to right, #3b82f6 ${audioBalance}%, #3a3a3a ${audioBalance}%)`
                 }}
               />
-              <span className="text-gray-500">R</span>
+              <span className="text-gray-500">S</span>
             </div>
 
-            {/* Right Volume */}
+            {/* Sub Volume */}
             <div className="flex items-center gap-2 flex-1">
-              <span className="text-gray-500 w-8">{isHorizontal ? '右' : '下'}</span>
+              <span className="text-gray-500 w-12">サブ</span>
               <input
                 type="range"
                 min={0}
                 max={2}
                 step={0.05}
-                value={rightVolume}
-                onChange={(e) => setRightVolume(parseFloat(e.target.value))}
+                value={subVolume}
+                onChange={(e) => setSubVolume(parseFloat(e.target.value))}
                 className="flex-1 h-1.5 rounded-lg cursor-pointer"
                 style={{
-                  background: `linear-gradient(to right, #3b82f6 ${(rightVolume / 2) * 100}%, #3a3a3a ${(rightVolume / 2) * 100}%)`
+                  background: `linear-gradient(to right, #3b82f6 ${(subVolume / 2) * 100}%, #3a3a3a ${(subVolume / 2) * 100}%)`
                 }}
               />
-              <span className="text-gray-400 w-10 text-right">{Math.round(rightVolume * 100)}%</span>
+              <span className="text-gray-400 w-10 text-right">{Math.round(subVolume * 100)}%</span>
             </div>
           </div>
         </div>
       )}
 
       {/* Help Text */}
-      {!hasClips && (
+      {!hasSegments && (
         <p className="text-center text-xs text-gray-600 mt-3">
-          両方のレーンにクリップを追加するとプレビューできます
+          セグメントを追加するとプレビューできます
         </p>
       )}
     </section>

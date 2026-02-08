@@ -5,14 +5,13 @@ import { ExportModal } from './ExportModal'
 
 export function Footer() {
   const getOutputDuration = useEditorStore((state) => state.getOutputDuration)
-  const leftLane = useEditorStore((state) => state.leftLane)
-  const rightLane = useEditorStore((state) => state.rightLane)
+  const segments = useEditorStore((state) => state.segments)
 
   const [showExportModal, setShowExportModal] = useState(false)
 
   const outputDuration = getOutputDuration()
-  const hasClips = leftLane.clips.length > 0 && rightLane.clips.length > 0
-  const canExport = hasClips && outputDuration > 0
+  const hasSegments = segments.length > 0
+  const canExport = hasSegments && outputDuration > 0
 
   return (
     <>
@@ -22,9 +21,9 @@ export function Footer() {
           <span className="text-lg font-mono text-white">
             {formatTime(outputDuration)}
           </span>
-          {!hasClips && (
+          {!hasSegments && (
             <span className="text-xs text-gray-500">
-              (左右両方にクリップを追加してください)
+              (セグメントを追加してください)
             </span>
           )}
         </div>

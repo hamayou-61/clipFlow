@@ -1,33 +1,41 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime, parseTime, clamp, snapToGrid } from '../utils/format'
 
 export function TrimEditor() {
   const selectedLaneId = useEditorStore((state) => state.selectedLaneId)
   const selectedClipId = useEditorStore((state) => state.selectedClipId)
-  const leftLane = useEditorStore((state) => state.leftLane)
-  const rightLane = useEditorStore((state) => state.rightLane)
+  const mainLane = useEditorStore((state) => state.mainLane)
+  const subLane = useEditorStore((state) => state.subLane)
+  const segments = useEditorStore((state) => state.segments)
   const updateClip = useEditorStore((state) => state.updateClip)
-  const aspectRatio = useEditorStore((state) => state.aspectRatio)
 
-  // Labels based on aspect ratio
-  const isVertical = aspectRatio === '9:16'
-  const firstLabel = isVertical ? '上' : '左'
-  const secondLabel = isVertical ? '下' : '右'
+  // Get the selected clip
+  const selectedLane = selectedLaneId === 'main' ? mainLane : subLane
+  const clip = selectedClipId
+    ? selectedLane.clips.find(c => c.id === selectedClipId)
+    : null
 
-  // Get the selected clip and its index reactively
-  const selectedLane = selectedLaneId === 'left' ? leftLane : rightLane
-  const clipIndex = selectedClipId
-    ? selectedLane.clips.findIndex(c => c.id === selectedClipId)
-    : -1
-  const clip = clipIndex >= 0 ? selectedLane.clips[clipIndex] : null
+  // Check if this is a sub clip in a split layout (duration is fixed by main clip)
+  const subClipConstraint = useMemo(() => {
+    if (!selectedClipId || selectedLaneId !== 'sub') return null
 
-  // Is this a right lane clip?
-  const isRightLane = selectedLaneId === 'right'
+    // Find segment that uses this clip as sub
+    const segment = segments.find(seg => seg.subClipId === selectedClipId)
+    if (!segment) return null
 
-  // Get the corresponding left clip at the same index for duration reference
-  const pairedLeftClip = clipIndex >= 0 ? leftLane.clips[clipIndex] : null
-  const leftDuration = pairedLeftClip ? pairedLeftClip.outPoint - pairedLeftClip.inPoint : 0
+    // Only constrain for split layouts
+    if (segment.layoutType !== 'split-h' && segment.layoutType !== 'split-v') return null
+
+    // Get the main clip's duration
+    const mainClip = segment.mainClipId
+      ? mainLane.clips.find(c => c.id === segment.mainClipId)
+      : null
+    if (!mainClip) return null
+
+    const mainDuration = mainClip.outPoint - mainClip.inPoint
+    return { mainDuration, layoutType: segment.layoutType }
+  }, [selectedClipId, selectedLaneId, segments, mainLane.clips])
 
   const [inValue, setInValue] = useState('')
   const [outValue, setOutValue] = useState('')
@@ -35,16 +43,6 @@ export function TrimEditor() {
   const [isEditingOut, setIsEditingOut] = useState(false)
 
   const sliderRef = useRef<HTMLDivElement>(null)
-
-  // Auto-sync right clip's OUT point when left duration changes or right IN changes
-  useEffect(() => {
-    if (isRightLane && clip && leftDuration > 0) {
-      const newOut = Math.min(clip.inPoint + leftDuration, clip.duration)
-      if (Math.abs(clip.outPoint - newOut) > 0.01) {
-        updateClip('right', clip.id, { outPoint: newOut })
-      }
-    }
-  }, [isRightLane, clip, leftDuration, updateClip])
 
   // Sync input values with clip
   useEffect(() => {
@@ -56,6 +54,17 @@ export function TrimEditor() {
     }
   }, [clip, isEditingIn, isEditingOut])
 
+  // Auto-sync sub clip outPoint when used in split layout
+  useEffect(() => {
+    if (!clip || !selectedLaneId || !subClipConstraint) return
+
+    const expectedOut = clip.inPoint + subClipConstraint.mainDuration
+    // Only update if there's a significant difference and it's within valid range
+    if (Math.abs(clip.outPoint - expectedOut) > 0.01 && expectedOut <= clip.duration) {
+      updateClip(selectedLaneId, clip.id, { outPoint: expectedOut })
+    }
+  }, [clip, selectedLaneId, subClipConstraint, updateClip])
+
   // Keyboard handler for fine adjustments
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -65,30 +74,37 @@ export function TrimEditor() {
       const step = e.shiftKey ? 1 : 0.1
       const target = e.altKey ? 'out' : 'in'
 
-      // Right lane: only allow IN adjustment
-      if (isRightLane && target === 'out') return
+      // For constrained sub clips, only allow adjusting IN point (moves both IN and OUT together)
+      if (subClipConstraint) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          const newIn = clamp(clip.inPoint - step, 0, clip.duration - subClipConstraint.mainDuration)
+          const newOut = newIn + subClipConstraint.mainDuration
+          updateClip(selectedLaneId, clip.id, { inPoint: newIn, outPoint: newOut })
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          const newIn = clamp(clip.inPoint + step, 0, clip.duration - subClipConstraint.mainDuration)
+          const newOut = newIn + subClipConstraint.mainDuration
+          updateClip(selectedLaneId, clip.id, { inPoint: newIn, outPoint: newOut })
+        }
+        return
+      }
 
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
         if (target === 'in') {
-          const maxIn = isRightLane
-            ? Math.max(0, clip.duration - leftDuration)
-            : clip.outPoint - 0.1
-          const newIn = clamp(clip.inPoint - step, 0, maxIn)
+          const newIn = clamp(clip.inPoint - step, 0, clip.outPoint - 0.1)
           updateClip(selectedLaneId, clip.id, { inPoint: newIn })
-        } else if (!isRightLane) {
+        } else {
           const newOut = clamp(clip.outPoint - step, clip.inPoint + 0.1, clip.duration)
           updateClip(selectedLaneId, clip.id, { outPoint: newOut })
         }
       } else if (e.key === 'ArrowRight') {
         e.preventDefault()
         if (target === 'in') {
-          const maxIn = isRightLane
-            ? Math.max(0, clip.duration - leftDuration)
-            : clip.outPoint - 0.1
-          const newIn = clamp(clip.inPoint + step, 0, maxIn)
+          const newIn = clamp(clip.inPoint + step, 0, clip.outPoint - 0.1)
           updateClip(selectedLaneId, clip.id, { inPoint: newIn })
-        } else if (!isRightLane) {
+        } else {
           const newOut = clamp(clip.outPoint + step, clip.inPoint + 0.1, clip.duration)
           updateClip(selectedLaneId, clip.id, { outPoint: newOut })
         }
@@ -97,14 +113,13 @@ export function TrimEditor() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [clip, selectedLaneId, updateClip, isRightLane, leftDuration])
+  }, [clip, selectedLaneId, updateClip, subClipConstraint])
 
   const handleInInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInValue(e.target.value)
   }
 
   const handleOutInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (isRightLane) return // Right lane OUT is read-only
     setOutValue(e.target.value)
   }
 
@@ -114,10 +129,7 @@ export function TrimEditor() {
 
     const parsed = parseTime(inValue)
     if (parsed !== null) {
-      const maxIn = isRightLane
-        ? Math.max(0, clip.duration - leftDuration)
-        : clip.outPoint - 0.1
-      const newIn = clamp(parsed, 0, maxIn)
+      const newIn = clamp(parsed, 0, clip.outPoint - 0.1)
       updateClip(selectedLaneId, clip.id, { inPoint: newIn })
     } else {
       setInValue(formatTime(clip.inPoint))
@@ -126,7 +138,7 @@ export function TrimEditor() {
 
   const handleOutBlur = () => {
     setIsEditingOut(false)
-    if (!clip || !selectedLaneId || isRightLane) return
+    if (!clip || !selectedLaneId) return
 
     const parsed = parseTime(outValue)
     if (parsed !== null) {
@@ -142,8 +154,9 @@ export function TrimEditor() {
     handle: 'in' | 'out'
   ) => {
     if (!clip || !selectedLaneId || !sliderRef.current) return
-    // Right lane: only allow IN handle
-    if (isRightLane && handle === 'out') return
+
+    // For constrained sub clips, don't allow dragging OUT handle
+    if (subClipConstraint && handle === 'out') return
 
     e.preventDefault()
     const rect = sliderRef.current.getBoundingClientRect()
@@ -158,13 +171,18 @@ export function TrimEditor() {
         newValue = snapToGrid(newValue, 0.5)
       }
 
+      // For constrained sub clips, move both IN and OUT together
+      if (subClipConstraint) {
+        const newIn = clamp(newValue, 0, clip.duration - subClipConstraint.mainDuration)
+        const newOut = newIn + subClipConstraint.mainDuration
+        updateClip(selectedLaneId, clip.id, { inPoint: newIn, outPoint: newOut })
+        return
+      }
+
       if (handle === 'in') {
-        const maxIn = isRightLane
-          ? Math.max(0, clip.duration - leftDuration)
-          : clip.outPoint - 0.1
-        newValue = clamp(newValue, 0, maxIn)
+        newValue = clamp(newValue, 0, clip.outPoint - 0.1)
         updateClip(selectedLaneId, clip.id, { inPoint: newValue })
-      } else if (!isRightLane) {
+      } else {
         newValue = clamp(newValue, clip.inPoint + 0.1, clip.duration)
         updateClip(selectedLaneId, clip.id, { outPoint: newValue })
       }
@@ -177,11 +195,11 @@ export function TrimEditor() {
 
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-  }, [clip, selectedLaneId, updateClip, isRightLane, leftDuration])
+  }, [clip, selectedLaneId, updateClip, subClipConstraint])
 
   if (!clip || !selectedLaneId) {
     return (
-      <section className="p-6 bg-editor-surface border-t border-editor-border">
+      <section className="p-6 bg-editor-bg">
         <div className="text-center text-gray-500 py-8">
           <svg
             className="w-12 h-12 mx-auto mb-3 opacity-50"
@@ -197,9 +215,6 @@ export function TrimEditor() {
             />
           </svg>
           <p>クリップを選択してトリム編集</p>
-          <p className="text-xs mt-1 text-gray-600">
-            {firstLabel}レーン: IN/OUT両方調整可 | {secondLabel}レーン: INのみ調整可（尺は{firstLabel}に連動）
-          </p>
         </div>
       </section>
     )
@@ -208,20 +223,16 @@ export function TrimEditor() {
   const usedDuration = clip.outPoint - clip.inPoint
   const inPercent = (clip.inPoint / clip.duration) * 100
   const outPercent = (clip.outPoint / clip.duration) * 100
-  const clipNumber = clipIndex + 1
-  const currentLaneLabel = selectedLaneId === 'left' ? firstLabel : secondLabel
-  const laneLabel = selectedLaneId === 'left'
-    ? `${firstLabel}レーン クリップ${clipNumber}（基準）`
-    : `${secondLabel}レーン クリップ${clipNumber}（従属）`
+  const laneLabel = selectedLaneId === 'main' ? 'メイン' : 'サブ'
 
   return (
-    <section className="p-6 bg-editor-surface border-t border-editor-border">
+    <section className="p-6 bg-editor-bg">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-500">選択中:</span>
-          <span className={`text-sm ${isRightLane ? 'text-yellow-400' : 'text-white'}`}>
-            {laneLabel}
+          <span className="text-sm text-white">
+            {laneLabel}レーン
           </span>
           <span className="text-gray-600">-</span>
           <span className="text-sm text-white truncate max-w-[200px]" title={clip.fileName}>
@@ -230,25 +241,8 @@ export function TrimEditor() {
         </div>
         <div className="text-xs text-gray-500">
           元動画尺: {formatTime(clip.duration)}
-          {isRightLane && leftDuration > 0 && (
-            <span className="ml-2 text-yellow-400">
-              ({firstLabel}レーン尺: {formatTime(leftDuration)})
-            </span>
-          )}
         </div>
       </div>
-
-      {/* Right/Bottom lane warning */}
-      {isRightLane && pairedLeftClip && (
-        <div className="mb-4 px-3 py-2 bg-yellow-500/10 border border-yellow-500/30 rounded text-xs text-yellow-400">
-          {secondLabel}レーン クリップ{clipNumber}は IN ポイントのみ調整可能です。使用尺は{firstLabel}レーン クリップ{clipNumber}に連動します。
-        </div>
-      )}
-      {isRightLane && !pairedLeftClip && (
-        <div className="mb-4 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-400">
-          {firstLabel}レーンにクリップ{clipNumber}がありません。先に{firstLabel}レーンにクリップを追加してください。
-        </div>
-      )}
 
       {/* Thumbnail Strip */}
       <div className="relative mb-4">
@@ -273,7 +267,7 @@ export function TrimEditor() {
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  <div className="w-full h-full bg-editor-bg flex items-center justify-center">
+                  <div className="w-full h-full bg-editor-surface flex items-center justify-center">
                     <span className="text-[8px] text-gray-600">{i + 1}</span>
                   </div>
                 )}
@@ -296,7 +290,7 @@ export function TrimEditor() {
       <div className="mb-6">
         <div
           ref={sliderRef}
-          className="relative h-6 bg-editor-bg rounded cursor-pointer"
+          className="relative h-6 bg-editor-surface rounded cursor-pointer"
         >
           {/* Track */}
           <div className="absolute inset-y-0 left-0 right-0 flex items-center">
@@ -326,21 +320,19 @@ export function TrimEditor() {
             </div>
           </div>
 
-          {/* OUT Handle - disabled for right lane */}
+          {/* OUT Handle */}
           <div
-            className={`
-              absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 rounded-full shadow transition-transform
-              ${isRightLane
+            className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 rounded-full shadow transition-transform ${
+              subClipConstraint
                 ? 'bg-gray-500 cursor-not-allowed'
                 : 'bg-white cursor-ew-resize hover:scale-110'
-              }
-            `}
+            }`}
             style={{ left: `${outPercent}%` }}
             onMouseDown={(e) => handleSliderMouseDown(e, 'out')}
-            title={isRightLane ? "OUT ポイント（自動）" : "OUT ポイント"}
+            title={subClipConstraint ? "メイン動画の尺に固定" : "OUT ポイント"}
           >
-            <div className={`absolute -bottom-5 left-1/2 -translate-x-1/2 text-[10px] whitespace-nowrap ${isRightLane ? 'text-gray-600' : 'text-gray-500'}`}>
-              OUT{isRightLane && ' (自動)'}
+            <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[10px] text-gray-500 whitespace-nowrap">
+              OUT
             </div>
           </div>
         </div>
@@ -363,27 +355,25 @@ export function TrimEditor() {
             onChange={handleInInputChange}
             onFocus={() => setIsEditingIn(true)}
             onBlur={handleInBlur}
-            className="w-24 px-2 py-1 text-sm font-mono bg-editor-bg border border-editor-border rounded text-white text-center focus:outline-none focus:border-editor-accent"
+            className="w-24 px-2 py-1 text-sm font-mono bg-editor-surface border border-editor-border rounded text-white text-center focus:outline-none focus:border-editor-accent"
           />
         </div>
 
         {/* OUT Input */}
         <div className="flex items-center gap-2">
-          <label className={`text-sm ${isRightLane ? 'text-gray-600' : 'text-gray-400'}`}>OUT:</label>
+          <label className="text-sm text-gray-400">OUT:</label>
           <input
             type="text"
             value={outValue}
             onChange={handleOutInputChange}
-            onFocus={() => !isRightLane && setIsEditingOut(true)}
+            onFocus={() => setIsEditingOut(true)}
             onBlur={handleOutBlur}
-            readOnly={isRightLane}
-            className={`
-              w-24 px-2 py-1 text-sm font-mono border rounded text-center focus:outline-none
-              ${isRightLane
-                ? 'bg-editor-border border-editor-border text-gray-500 cursor-not-allowed'
-                : 'bg-editor-bg border-editor-border text-white focus:border-editor-accent'
-              }
-            `}
+            disabled={!!subClipConstraint}
+            className={`w-24 px-2 py-1 text-sm font-mono border border-editor-border rounded text-center focus:outline-none ${
+              subClipConstraint
+                ? 'bg-editor-border text-gray-500 cursor-not-allowed'
+                : 'bg-editor-surface text-white focus:border-editor-accent'
+            }`}
           />
         </div>
 
@@ -397,12 +387,27 @@ export function TrimEditor() {
 
         {/* Keyboard hints */}
         <div className="ml-auto text-xs text-gray-600">
-          {isRightLane
-            ? '左右: IN +/-0.1s | Shift+左右: +/-1s'
+          {subClipConstraint
+            ? '左右: 開始位置 +/-0.1s | Shift+左右: +/-1s'
             : '左右: IN +/-0.1s | Shift+左右: +/-1s | Alt: OUT選択'
           }
         </div>
       </div>
+
+      {/* Constraint message for sub clips in split layout */}
+      {subClipConstraint && (
+        <div className="mt-4 p-3 bg-editor-surface border border-editor-border rounded-lg">
+          <div className="flex items-center gap-2 text-sm text-yellow-500">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>尺はメイン動画に固定されています（{formatTime(subClipConstraint.mainDuration)}）</span>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            開始位置（IN点）のみ調整可能です。尺を変更するにはメイン動画を編集してください。
+          </p>
+        </div>
+      )}
     </section>
   )
 }

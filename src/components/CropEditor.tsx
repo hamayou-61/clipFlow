@@ -1,20 +1,36 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
+import type { LayoutType } from '../types'
 
 export function CropEditor() {
   const selectedLaneId = useEditorStore((state) => state.selectedLaneId)
   const selectedClipId = useEditorStore((state) => state.selectedClipId)
-  const leftLane = useEditorStore((state) => state.leftLane)
-  const rightLane = useEditorStore((state) => state.rightLane)
+  const mainLane = useEditorStore((state) => state.mainLane)
+  const subLane = useEditorStore((state) => state.subLane)
   const updateClip = useEditorStore((state) => state.updateClip)
   const aspectRatio = useEditorStore((state) => state.aspectRatio)
+  const segments = useEditorStore((state) => state.segments)
 
   const isVertical = aspectRatio === '9:16'
-  const firstLabel = isVertical ? '上' : '左'
-  const secondLabel = isVertical ? '下' : '右'
+
+  // Find the segment layout for the selected clip
+  const clipLayoutType = useMemo((): LayoutType => {
+    if (!selectedClipId || !selectedLaneId) return 'single-main'
+
+    // Find segment that uses this clip
+    const segment = segments.find(seg => {
+      if (selectedLaneId === 'main') {
+        return seg.mainClipId === selectedClipId
+      } else {
+        return seg.subClipId === selectedClipId
+      }
+    })
+
+    return segment?.layoutType || 'single-main'
+  }, [selectedClipId, selectedLaneId, segments])
 
   // Get the selected clip
-  const selectedLane = selectedLaneId === 'left' ? leftLane : rightLane
+  const selectedLane = selectedLaneId === 'main' ? mainLane : subLane
   const clip = selectedClipId
     ? selectedLane.clips.find(c => c.id === selectedClipId)
     : null
@@ -102,15 +118,41 @@ export function CropEditor() {
     )
   }
 
-  const currentLaneLabel = selectedLaneId === 'left' ? firstLabel : secondLabel
+  const currentLaneLabel = selectedLaneId === 'main' ? 'メイン' : 'サブ'
+
+  // Layout label for display
+  const layoutLabel = useMemo(() => {
+    switch (clipLayoutType) {
+      case 'single-main': return 'フル画面'
+      case 'split-h': return '左右分割'
+      case 'split-v': return '上下分割'
+      default: return ''
+    }
+  }, [clipLayoutType])
 
   // Source video aspect ratio
   const sourceAspect = clip.width / clip.height
 
-  // Target crop aspect ratio:
-  // For 16:9 output: each half is 960x1080 = 8:9
-  // For 9:16 output: each half is 1080x960 = 9:8
-  const targetAspect = isVertical ? (9 / 8) : (8 / 9)
+  // Target crop aspect ratio based on layout type:
+  // single-main: Full output aspect (16:9 or 9:16)
+  // split-h: Half width (8:9 for 16:9 output, 9:32 for 9:16 output)
+  // split-v: Half height (32:9 for 16:9 output, 9:8 for 9:16 output)
+  const targetAspect = useMemo(() => {
+    if (clipLayoutType === 'single-main') {
+      // Full frame - use output aspect ratio
+      return isVertical ? (9 / 16) : (16 / 9)
+    } else if (clipLayoutType === 'split-h') {
+      // Horizontal split - each video is half width
+      // 16:9 output → 960x1080 = 8:9
+      // 9:16 output → 540x1920 = 9:32
+      return isVertical ? (9 / 32) : (8 / 9)
+    } else {
+      // split-v: Vertical split - each video is half height
+      // 16:9 output → 1920x540 = 32:9
+      // 9:16 output → 1080x960 = 9:8
+      return isVertical ? (9 / 8) : (32 / 9)
+    }
+  }, [clipLayoutType, isVertical])
 
   // Calculate video container size (max 300px wide or 220px tall)
   const maxWidth = 300
@@ -168,6 +210,9 @@ export function CropEditor() {
           <span className="text-xs text-gray-500">クロップ調整:</span>
           <span className="text-sm text-white">
             {currentLaneLabel}レーン - {clip.fileName}
+          </span>
+          <span className="text-xs px-2 py-0.5 bg-editor-surface border border-editor-border rounded text-gray-400">
+            {layoutLabel}
           </span>
         </div>
         <button

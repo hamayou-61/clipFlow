@@ -219,7 +219,9 @@ function formatDateTime(): string {
 
 // Video IPC Handlers
 
-interface ClipConfig {
+type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'single-sub'
+
+interface ClipInfo {
   filePath: string
   inPoint: number
   outPoint: number
@@ -230,14 +232,22 @@ interface ClipConfig {
   height: number
 }
 
+interface SegmentExport {
+  layoutType: LayoutType
+  duration: number
+  mainClip: ClipInfo | null
+  subClip: ClipInfo | null
+  mainInPoint: number
+  subInPoint: number
+}
+
 interface ExportConfig {
   outputPath: string
   aspectRatio: '16:9' | '9:16'
-  audioBalance: number // 0 = left only, 50 = equal mix, 100 = right only
-  leftVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
-  rightVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
-  leftClips: ClipConfig[]
-  rightClips: ClipConfig[]
+  audioBalance: number // 0 = main only, 50 = equal mix, 100 = sub only
+  mainVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
+  subVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
+  segments: SegmentExport[]
 }
 
 ipcMain.handle('video:getMetadata', async (_, filePath: string) => {
@@ -338,27 +348,21 @@ ipcMain.handle('video:generateThumbnails', async (_, filePath: string, count: nu
 })
 
 ipcMain.handle('video:export', async (event, config: ExportConfig) => {
-  const { outputPath, aspectRatio, audioBalance, leftVolume, rightVolume, leftClips, rightClips } = config
+  const { outputPath, aspectRatio, audioBalance, mainVolume, subVolume, segments } = config
 
-  console.log('Starting export with config:', { outputPath, aspectRatio, audioBalance, leftVolume, rightVolume })
-  console.log('Left clips:', leftClips.length, 'Right clips:', rightClips.length)
+  console.log('Starting export with config:', { outputPath, aspectRatio, audioBalance, mainVolume, subVolume })
+  console.log('Segments:', segments.length)
 
-  if (leftClips.length === 0 || rightClips.length === 0) {
-    throw new Error('Both lanes must have at least one clip')
+  if (segments.length === 0) {
+    throw new Error('At least one segment is required')
   }
 
   // Calculate dimensions based on aspect ratio
-  // 16:9 = horizontal (side-by-side), 9:16 = vertical (stacked)
   const isVertical = aspectRatio === '9:16'
   const outputWidth = isVertical ? 1080 : 1920
   const outputHeight = isVertical ? 1920 : 1080
 
-  // For 16:9: each video is half width (960x1080)
-  // For 9:16: each video is half height (1080x960)
-  const videoWidth = isVertical ? outputWidth : outputWidth / 2
-  const videoHeight = isVertical ? outputHeight / 2 : outputHeight
-
-  // Collect all unique input files and map clip indices to input indices
+  // Collect all unique input files
   const inputFiles: string[] = []
   const fileToInputIndex = new Map<string, number>()
 
@@ -370,219 +374,183 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
     return fileToInputIndex.get(filePath)!
   }
 
-  // Pre-process clips to get input indices
-  const leftClipsWithInput = leftClips.map((clip, i) => ({
-    ...clip,
-    inputIndex: getInputIndex(clip.filePath),
-    clipIndex: i
-  }))
-
-  const rightClipsWithInput = rightClips.map((clip, i) => ({
-    ...clip,
-    inputIndex: getInputIndex(clip.filePath),
-    clipIndex: i
-  }))
+  // Pre-process segments to get input indices
+  segments.forEach((seg) => {
+    if (seg.mainClip) getInputIndex(seg.mainClip.filePath)
+    if (seg.subClip) getInputIndex(seg.subClip.filePath)
+  })
 
   // Calculate total duration
-  const leftTotalDuration = leftClips.reduce((sum, c) => sum + (c.outPoint - c.inPoint), 0)
-  const rightTotalDuration = rightClips.reduce((sum, c) => sum + (c.outPoint - c.inPoint), 0)
-  const outputDuration = Math.min(leftTotalDuration, rightTotalDuration)
+  const outputDuration = segments.reduce((sum, seg) => sum + seg.duration, 0)
 
   console.log('Input files:', inputFiles)
-  console.log('Total duration - Left:', leftTotalDuration, 'Right:', rightTotalDuration, 'Output:', outputDuration)
+  console.log('Total duration:', outputDuration)
 
   return new Promise<void>((resolve, reject) => {
-    const stackFilter = isVertical ? 'vstack' : 'hstack'
-    const topLeftLabel = isVertical ? 'top' : 'left'
-    const bottomRightLabel = isVertical ? 'bottom' : 'right'
-
     const videoFilters: string[] = []
     const audioFilters: string[] = []
+    const segmentVideoLabels: string[] = []
+    const segmentAudioLabels: string[] = []
 
-    // Process left lane clips
-    const leftClipLabels: string[] = []
-    leftClipsWithInput.forEach((clip, i) => {
-      const label = `lv${i}`
-      const cropScale = clip.cropScale || 1
+    // audioBalance: 0 = main only, 50 = equal, 100 = sub only
+    const mainBalanceRatio = (100 - audioBalance) / 100
+    const subBalanceRatio = audioBalance / 100
+    const mainFinalVol = mainBalanceRatio * mainVolume
+    const subFinalVol = subBalanceRatio * subVolume
 
-      // Apply zoom: scale dimensions by cropScale, then crop/pad to target
-      // cropScale > 1: zoom in (larger scale, more cropping)
-      // cropScale < 1: zoom out (smaller scale, may need padding)
-      const scaledWidth = Math.round(videoWidth * cropScale)
-      const scaledHeight = Math.round(videoHeight * cropScale)
+    // Process each segment
+    segments.forEach((seg, segIdx) => {
+      const { layoutType, duration, mainClip, subClip, mainInPoint, subInPoint } = seg
 
-      // Determine scaling mode based on source aspect ratio
-      // If source is "taller" than target (vertical source), use decrease (height 100%, may have side bars)
-      // If source is "wider" than target (horizontal source), use increase (cover, may crop)
-      const sourceAspect = clip.width / clip.height
-      const targetAspect = videoWidth / videoHeight
-      const scaleMode = sourceAspect < targetAspect ? 'decrease' : 'increase'
+      // Calculate target dimensions based on layout
+      let mainTargetWidth: number, mainTargetHeight: number
+      let subTargetWidth: number, subTargetHeight: number
 
-      // Crop position adjustment
-      const cropX = `(iw-${videoWidth})/2*(1+${clip.cropX})`
-      const cropY = `(ih-${videoHeight})/2*(1+${clip.cropY})`
+      if (layoutType === 'split-h') {
+        // Horizontal split: side by side
+        mainTargetWidth = outputWidth / 2
+        mainTargetHeight = outputHeight
+        subTargetWidth = outputWidth / 2
+        subTargetHeight = outputHeight
+      } else if (layoutType === 'split-v') {
+        // Vertical split: stacked
+        mainTargetWidth = outputWidth
+        mainTargetHeight = outputHeight / 2
+        subTargetWidth = outputWidth
+        subTargetHeight = outputHeight / 2
+      } else {
+        // Single mode: full frame
+        mainTargetWidth = outputWidth
+        mainTargetHeight = outputHeight
+        subTargetWidth = outputWidth
+        subTargetHeight = outputHeight
+      }
 
-      // Pad position adjustment (for zoom out or vertical source)
-      const padX = `(${videoWidth}-iw)/2*(1-${clip.cropX})`
-      const padY = `(${videoHeight}-ih)/2*(1-${clip.cropY})`
+      const buildClipFilter = (
+        clip: ClipInfo,
+        inPointOffset: number,
+        targetWidth: number,
+        targetHeight: number,
+        label: string
+      ): string => {
+        const inputIdx = getInputIndex(clip.filePath)
+        const cropScale = clip.cropScale || 1
+        const startTime = clip.inPoint + inPointOffset
+        const endTime = startTime + duration
 
-      // Build filter: scale -> crop (if zoomed in) -> pad (if zoomed out or vertical source)
-      let filterChain = `[${clip.inputIndex}:v]trim=start=${clip.inPoint}:end=${clip.outPoint},setpts=PTS-STARTPTS`
-      filterChain += `,scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=${scaleMode}`
-      filterChain += `,crop='min(iw\\,${videoWidth})':'min(ih\\,${videoHeight})':${cropX}:${cropY}`
-      filterChain += `,pad=${videoWidth}:${videoHeight}:${padX}:${padY}:black`
-      filterChain += `,setsar=1[${label}]`
+        const scaledWidth = Math.round(targetWidth * cropScale)
+        const scaledHeight = Math.round(targetHeight * cropScale)
 
-      videoFilters.push(filterChain)
-      leftClipLabels.push(`[${label}]`)
+        const sourceAspect = clip.width / clip.height
+        const targetAspect = targetWidth / targetHeight
+        const scaleMode = sourceAspect < targetAspect ? 'decrease' : 'increase'
+
+        const cropX = `(iw-${targetWidth})/2*(1+${clip.cropX})`
+        const cropY = `(ih-${targetHeight})/2*(1+${clip.cropY})`
+        const padX = `(${targetWidth}-iw)/2*(1-${clip.cropX})`
+        const padY = `(${targetHeight}-ih)/2*(1-${clip.cropY})`
+
+        let filterChain = `[${inputIdx}:v]trim=start=${startTime}:end=${endTime},setpts=PTS-STARTPTS`
+        filterChain += `,scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=${scaleMode}`
+        filterChain += `,crop='min(iw\\,${targetWidth})':'min(ih\\,${targetHeight})':${cropX}:${cropY}`
+        filterChain += `,pad=${targetWidth}:${targetHeight}:${padX}:${padY}:black`
+        filterChain += `,setsar=1[${label}]`
+
+        return filterChain
+      }
+
+      const buildAudioFilter = (
+        clip: ClipInfo,
+        inPointOffset: number,
+        label: string
+      ): string => {
+        const inputIdx = getInputIndex(clip.filePath)
+        const startTime = clip.inPoint + inPointOffset
+        const endTime = startTime + duration
+
+        return `[${inputIdx}:a]atrim=start=${startTime}:end=${endTime},asetpts=PTS-STARTPTS[${label}]`
+      }
+
+      const segVideoLabel = `segv${segIdx}`
+      const segAudioLabel = `sega${segIdx}`
+
+      if (layoutType === 'single-main') {
+        // Single main clip
+        if (mainClip) {
+          videoFilters.push(buildClipFilter(mainClip, mainInPoint, outputWidth, outputHeight, segVideoLabel))
+          videoFilters.push(buildAudioFilter(mainClip, mainInPoint, `${segAudioLabel}_main`))
+          audioFilters.push(`[${segAudioLabel}_main]volume=${mainVolume}[${segAudioLabel}]`)
+        } else {
+          // Black frame with silence if no clip
+          videoFilters.push(`color=c=black:s=${outputWidth}x${outputHeight}:d=${duration}[${segVideoLabel}]`)
+          audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${segAudioLabel}]`)
+        }
+      } else if (layoutType === 'single-sub') {
+        // Single sub clip
+        if (subClip) {
+          videoFilters.push(buildClipFilter(subClip, subInPoint, outputWidth, outputHeight, segVideoLabel))
+          videoFilters.push(buildAudioFilter(subClip, subInPoint, `${segAudioLabel}_sub`))
+          audioFilters.push(`[${segAudioLabel}_sub]volume=${subVolume}[${segAudioLabel}]`)
+        } else {
+          videoFilters.push(`color=c=black:s=${outputWidth}x${outputHeight}:d=${duration}[${segVideoLabel}]`)
+          audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${segAudioLabel}]`)
+        }
+      } else {
+        // Split mode (split-h or split-v)
+        const stackFilter = layoutType === 'split-h' ? 'hstack' : 'vstack'
+
+        const mainLabel = `seg${segIdx}_main`
+        const subLabel = `seg${segIdx}_sub`
+
+        if (mainClip) {
+          videoFilters.push(buildClipFilter(mainClip, mainInPoint, mainTargetWidth, mainTargetHeight, mainLabel))
+          videoFilters.push(buildAudioFilter(mainClip, mainInPoint, `${mainLabel}_a`))
+        } else {
+          videoFilters.push(`color=c=black:s=${mainTargetWidth}x${mainTargetHeight}:d=${duration}[${mainLabel}]`)
+          videoFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${mainLabel}_a]`)
+        }
+
+        if (subClip) {
+          videoFilters.push(buildClipFilter(subClip, subInPoint, subTargetWidth, subTargetHeight, subLabel))
+          videoFilters.push(buildAudioFilter(subClip, subInPoint, `${subLabel}_a`))
+        } else {
+          videoFilters.push(`color=c=black:s=${subTargetWidth}x${subTargetHeight}:d=${duration}[${subLabel}]`)
+          videoFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${subLabel}_a]`)
+        }
+
+        // Stack the two clips
+        videoFilters.push(`[${mainLabel}][${subLabel}]${stackFilter}=inputs=2[${segVideoLabel}]`)
+
+        // Mix audio for this segment
+        if (audioBalance === 0) {
+          audioFilters.push(`[${mainLabel}_a]volume=${mainVolume}[${segAudioLabel}]`)
+        } else if (audioBalance === 100) {
+          audioFilters.push(`[${subLabel}_a]volume=${subVolume}[${segAudioLabel}]`)
+        } else {
+          audioFilters.push(
+            `[${mainLabel}_a]volume=${mainFinalVol}[${mainLabel}_avol]`,
+            `[${subLabel}_a]volume=${subFinalVol}[${subLabel}_avol]`,
+            `[${mainLabel}_avol][${subLabel}_avol]amix=inputs=2:duration=shortest:normalize=0[${segAudioLabel}]`
+          )
+        }
+      }
+
+      segmentVideoLabels.push(`[${segVideoLabel}]`)
+      segmentAudioLabels.push(`[${segAudioLabel}]`)
     })
 
-    // Concatenate left clips if more than one
-    let leftFinalLabel: string
-    if (leftClipLabels.length > 1) {
-      leftFinalLabel = `${topLeftLabel}concat`
+    // Concatenate all segments
+    if (segments.length > 1) {
       videoFilters.push(
-        `${leftClipLabels.join('')}concat=n=${leftClipLabels.length}:v=1:a=0[${leftFinalLabel}]`
+        `${segmentVideoLabels.join('')}concat=n=${segments.length}:v=1:a=0[vout]`
       )
-    } else {
-      leftFinalLabel = `lv0`
-    }
-
-    // Process right lane clips
-    const rightClipLabels: string[] = []
-    rightClipsWithInput.forEach((clip, i) => {
-      const label = `rv${i}`
-      const cropScale = clip.cropScale || 1
-
-      const scaledWidth = Math.round(videoWidth * cropScale)
-      const scaledHeight = Math.round(videoHeight * cropScale)
-
-      // Determine scaling mode based on source aspect ratio
-      const sourceAspect = clip.width / clip.height
-      const targetAspect = videoWidth / videoHeight
-      const scaleMode = sourceAspect < targetAspect ? 'decrease' : 'increase'
-
-      const cropX = `(iw-${videoWidth})/2*(1+${clip.cropX})`
-      const cropY = `(ih-${videoHeight})/2*(1+${clip.cropY})`
-      const padX = `(${videoWidth}-iw)/2*(1-${clip.cropX})`
-      const padY = `(${videoHeight}-ih)/2*(1-${clip.cropY})`
-
-      let filterChain = `[${clip.inputIndex}:v]trim=start=${clip.inPoint}:end=${clip.outPoint},setpts=PTS-STARTPTS`
-      filterChain += `,scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=${scaleMode}`
-      filterChain += `,crop='min(iw\\,${videoWidth})':'min(ih\\,${videoHeight})':${cropX}:${cropY}`
-      filterChain += `,pad=${videoWidth}:${videoHeight}:${padX}:${padY}:black`
-      filterChain += `,setsar=1[${label}]`
-
-      videoFilters.push(filterChain)
-      rightClipLabels.push(`[${label}]`)
-    })
-
-    // Concatenate right clips if more than one
-    let rightFinalLabel: string
-    if (rightClipLabels.length > 1) {
-      rightFinalLabel = `${bottomRightLabel}concat`
-      videoFilters.push(
-        `${rightClipLabels.join('')}concat=n=${rightClipLabels.length}:v=1:a=0[${rightFinalLabel}]`
-      )
-    } else {
-      rightFinalLabel = `rv0`
-    }
-
-    // Stack the two lanes
-    videoFilters.push(
-      `[${leftFinalLabel}][${rightFinalLabel}]${stackFilter}=inputs=2,scale=${outputWidth}:${outputHeight}[vout]`
-    )
-
-    // Audio processing
-    // audioBalance: 0 = left only, 50 = equal, 100 = right only
-    // leftVolume/rightVolume: gain for each track (1.0 = 100%, 2.0 = 200%, etc.)
-    const leftBalanceRatio = (100 - audioBalance) / 100
-    const rightBalanceRatio = audioBalance / 100
-
-    // Final volume = balance ratio * individual gain
-    const leftFinalVol = leftBalanceRatio * leftVolume
-    const rightFinalVol = rightBalanceRatio * rightVolume
-
-    if (audioBalance === 0) {
-      // Left only - no mixing needed
-      const leftAudioLabels: string[] = []
-      leftClipsWithInput.forEach((clip, i) => {
-        const label = `la${i}`
-        audioFilters.push(
-          `[${clip.inputIndex}:a]atrim=start=${clip.inPoint}:end=${clip.outPoint},asetpts=PTS-STARTPTS[${label}]`
-        )
-        leftAudioLabels.push(`[${label}]`)
-      })
-      if (leftAudioLabels.length > 1) {
-        audioFilters.push(
-          `${leftAudioLabels.join('')}concat=n=${leftAudioLabels.length}:v=0:a=1[laconcat]`
-        )
-        audioFilters.push(`[laconcat]volume=${leftVolume}[aout]`)
-      } else {
-        audioFilters.push(`[la0]volume=${leftVolume}[aout]`)
-      }
-    } else if (audioBalance === 100) {
-      // Right only - no mixing needed
-      const rightAudioLabels: string[] = []
-      rightClipsWithInput.forEach((clip, i) => {
-        const label = `ra${i}`
-        audioFilters.push(
-          `[${clip.inputIndex}:a]atrim=start=${clip.inPoint}:end=${clip.outPoint},asetpts=PTS-STARTPTS[${label}]`
-        )
-        rightAudioLabels.push(`[${label}]`)
-      })
-      if (rightAudioLabels.length > 1) {
-        audioFilters.push(
-          `${rightAudioLabels.join('')}concat=n=${rightAudioLabels.length}:v=0:a=1[raconcat]`
-        )
-        audioFilters.push(`[raconcat]volume=${rightVolume}[aout]`)
-      } else {
-        audioFilters.push(`[ra0]volume=${rightVolume}[aout]`)
-      }
-    } else {
-      // Mix both audio tracks with calculated volumes
-      const leftAudioLabels: string[] = []
-      leftClipsWithInput.forEach((clip, i) => {
-        const label = `la${i}`
-        audioFilters.push(
-          `[${clip.inputIndex}:a]atrim=start=${clip.inPoint}:end=${clip.outPoint},asetpts=PTS-STARTPTS[${label}]`
-        )
-        leftAudioLabels.push(`[${label}]`)
-      })
-      let leftAudioFinal: string
-      if (leftAudioLabels.length > 1) {
-        leftAudioFinal = 'laconcat'
-        audioFilters.push(
-          `${leftAudioLabels.join('')}concat=n=${leftAudioLabels.length}:v=0:a=1[${leftAudioFinal}]`
-        )
-      } else {
-        leftAudioFinal = 'la0'
-      }
-
-      const rightAudioLabels: string[] = []
-      rightClipsWithInput.forEach((clip, i) => {
-        const label = `ra${i}`
-        audioFilters.push(
-          `[${clip.inputIndex}:a]atrim=start=${clip.inPoint}:end=${clip.outPoint},asetpts=PTS-STARTPTS[${label}]`
-        )
-        rightAudioLabels.push(`[${label}]`)
-      })
-      let rightAudioFinal: string
-      if (rightAudioLabels.length > 1) {
-        rightAudioFinal = 'raconcat'
-        audioFilters.push(
-          `${rightAudioLabels.join('')}concat=n=${rightAudioLabels.length}:v=0:a=1[${rightAudioFinal}]`
-        )
-      } else {
-        rightAudioFinal = 'ra0'
-      }
-
-      // Apply volume adjustment (balance ratio * individual gain) and mix
       audioFilters.push(
-        `[${leftAudioFinal}]volume=${leftFinalVol}[lavol]`,
-        `[${rightAudioFinal}]volume=${rightFinalVol}[ravol]`,
-        `[lavol][ravol]amix=inputs=2:duration=shortest:normalize=0[aout]`
+        `${segmentAudioLabels.join('')}concat=n=${segments.length}:v=0:a=1[aout]`
       )
+    } else {
+      // Single segment - just rename labels
+      videoFilters.push(`[segv0]copy[vout]`)
+      audioFilters.push(`[sega0]acopy[aout]`)
     }
 
     const filterComplex = [...videoFilters, ...audioFilters].join(';')

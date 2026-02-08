@@ -1,26 +1,35 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime } from '../utils/format'
+import type { LayoutType } from '../types'
 
-declare global {
-  interface Window {
-    electronAPI?: {
-      saveFileDialog: () => Promise<string | null>
-      exportVideo: (config: ExportConfig) => Promise<void>
-      onExportProgress: (callback: (progress: number) => void) => void
-      cancelExport: () => void
-    }
-  }
+interface ClipInfo {
+  filePath: string
+  inPoint: number
+  outPoint: number
+  cropX: number
+  cropY: number
+  cropScale: number
+  width: number
+  height: number
+}
+
+interface SegmentExport {
+  layoutType: LayoutType
+  duration: number
+  mainClip: ClipInfo | null
+  subClip: ClipInfo | null
+  mainInPoint: number
+  subInPoint: number
 }
 
 interface ExportConfig {
   outputPath: string
   aspectRatio: '16:9' | '9:16'
-  audioBalance: number // 0 = left only, 50 = equal, 100 = right only
-  leftVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
-  rightVolume: number // 1.0 = 100%, 2.0 = 200%, etc.
-  leftClips: { filePath: string; inPoint: number; outPoint: number; cropX: number; cropY: number; cropScale: number; width: number; height: number }[]
-  rightClips: { filePath: string; inPoint: number; outPoint: number; cropX: number; cropY: number; cropScale: number; width: number; height: number }[]
+  audioBalance: number
+  mainVolume: number
+  subVolume: number
+  segments: SegmentExport[]
 }
 
 interface ExportModalProps {
@@ -30,15 +39,16 @@ interface ExportModalProps {
 export function ExportModal({ onClose }: ExportModalProps) {
   const aspectRatio = useEditorStore((state) => state.aspectRatio)
   const audioBalance = useEditorStore((state) => state.audioBalance)
-  const leftVolume = useEditorStore((state) => state.leftVolume)
-  const rightVolume = useEditorStore((state) => state.rightVolume)
+  const mainVolume = useEditorStore((state) => state.mainVolume)
+  const subVolume = useEditorStore((state) => state.subVolume)
   const isExporting = useEditorStore((state) => state.isExporting)
   const exportProgress = useEditorStore((state) => state.exportProgress)
   const setExporting = useEditorStore((state) => state.setExporting)
   const setExportProgress = useEditorStore((state) => state.setExportProgress)
   const getOutputDuration = useEditorStore((state) => state.getOutputDuration)
-  const leftLane = useEditorStore((state) => state.leftLane)
-  const rightLane = useEditorStore((state) => state.rightLane)
+  const mainLane = useEditorStore((state) => state.mainLane)
+  const subLane = useEditorStore((state) => state.subLane)
+  const segments = useEditorStore((state) => state.segments)
 
   const outputDuration = getOutputDuration()
 
@@ -66,8 +76,8 @@ export function ExportModal({ onClose }: ExportModalProps) {
 
   const handleExport = useCallback(async () => {
     if (!window.electronAPI || !savePath) return
-    if (leftLane.clips.length === 0 || rightLane.clips.length === 0) {
-      setExportError('両方のレーンにクリップが必要です')
+    if (segments.length === 0) {
+      setExportError('セグメントが必要です')
       return
     }
 
@@ -76,32 +86,50 @@ export function ExportModal({ onClose }: ExportModalProps) {
     setExportError(null)
     setExportComplete(false)
 
+    // Build segment export data
+    const segmentExports: SegmentExport[] = segments.map((seg) => {
+      const mainClip = seg.mainClipId
+        ? mainLane.clips.find(c => c.id === seg.mainClipId)
+        : null
+      const subClip = seg.subClipId
+        ? subLane.clips.find(c => c.id === seg.subClipId)
+        : null
+
+      return {
+        layoutType: seg.layoutType,
+        duration: seg.duration,
+        mainClip: mainClip ? {
+          filePath: mainClip.filePath,
+          inPoint: mainClip.inPoint,
+          outPoint: mainClip.outPoint,
+          cropX: mainClip.cropX,
+          cropY: mainClip.cropY,
+          cropScale: mainClip.cropScale ?? 1,
+          width: mainClip.width,
+          height: mainClip.height,
+        } : null,
+        subClip: subClip ? {
+          filePath: subClip.filePath,
+          inPoint: subClip.inPoint,
+          outPoint: subClip.outPoint,
+          cropX: subClip.cropX,
+          cropY: subClip.cropY,
+          cropScale: subClip.cropScale ?? 1,
+          width: subClip.width,
+          height: subClip.height,
+        } : null,
+        mainInPoint: seg.mainInPoint,
+        subInPoint: seg.subInPoint,
+      }
+    })
+
     const config: ExportConfig = {
       outputPath: savePath,
       aspectRatio,
       audioBalance,
-      leftVolume,
-      rightVolume,
-      leftClips: leftLane.clips.map((clip) => ({
-        filePath: clip.filePath,
-        inPoint: clip.inPoint,
-        outPoint: clip.outPoint,
-        cropX: clip.cropX,
-        cropY: clip.cropY,
-        cropScale: clip.cropScale ?? 1,
-        width: clip.width,
-        height: clip.height,
-      })),
-      rightClips: rightLane.clips.map((clip) => ({
-        filePath: clip.filePath,
-        inPoint: clip.inPoint,
-        outPoint: clip.outPoint,
-        cropX: clip.cropX,
-        cropY: clip.cropY,
-        cropScale: clip.cropScale ?? 1,
-        width: clip.width,
-        height: clip.height,
-      })),
+      mainVolume,
+      subVolume,
+      segments: segmentExports,
     }
 
     try {
@@ -113,7 +141,7 @@ export function ExportModal({ onClose }: ExportModalProps) {
     } finally {
       setExporting(false)
     }
-  }, [savePath, aspectRatio, audioBalance, leftVolume, rightVolume, leftLane.clips, rightLane.clips, setExporting, setExportProgress])
+  }, [savePath, aspectRatio, audioBalance, mainVolume, subVolume, segments, mainLane.clips, subLane.clips, setExporting, setExportProgress])
 
   const handleCancel = useCallback(() => {
     if (isExporting) {
@@ -133,10 +161,10 @@ export function ExportModal({ onClose }: ExportModalProps) {
     }
   }
 
-  const canExport = savePath && leftLane.clips.length > 0 && rightLane.clips.length > 0
+  const canExport = savePath && segments.length > 0
 
   // Display labels for aspect ratio
-  const aspectLabel = aspectRatio === '16:9' ? '16:9 (横長・横並び)' : '9:16 (縦長・縦積み)'
+  const aspectLabel = aspectRatio === '16:9' ? '16:9 (横長)' : '9:16 (縦長)'
 
   return (
     <div
@@ -175,6 +203,12 @@ export function ExportModal({ onClose }: ExportModalProps) {
           <div className="flex items-center justify-between text-sm">
             <span className="text-gray-400">出力尺:</span>
             <span className="font-mono text-white">{formatTime(outputDuration)}</span>
+          </div>
+
+          {/* Segment Count */}
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-gray-400">セグメント数:</span>
+            <span className="text-white">{segments.length}</span>
           </div>
 
           {/* Aspect Ratio (Display Only) */}

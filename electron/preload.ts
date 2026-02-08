@@ -17,18 +17,35 @@ export interface VideoMetadata {
   fps: number
 }
 
-export interface ExportConfig {
-  outputPath: string
-  aspectRatio: '16:9' | '9:16'
-  audioMode: 'left' | 'right' | 'mix'
-  leftClips: ClipConfig[]
-  rightClips: ClipConfig[]
-}
+export type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'single-sub'
 
-export interface ClipConfig {
+export interface ClipInfo {
   filePath: string
   inPoint: number
   outPoint: number
+  cropX: number
+  cropY: number
+  cropScale: number
+  width: number
+  height: number
+}
+
+export interface SegmentExport {
+  layoutType: LayoutType
+  duration: number
+  mainClip: ClipInfo | null
+  subClip: ClipInfo | null
+  mainInPoint: number
+  subInPoint: number
+}
+
+export interface ExportConfig {
+  outputPath: string
+  aspectRatio: '16:9' | '9:16'
+  audioBalance: number
+  mainVolume: number
+  subVolume: number
+  segments: SegmentExport[]
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {

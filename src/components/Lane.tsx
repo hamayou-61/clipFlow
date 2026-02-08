@@ -2,51 +2,25 @@ import { useCallback, useState } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { ClipCard } from './ClipCard'
 import { formatTime, generateId } from '../utils/format'
-import type { Clip } from '../types'
-
-declare global {
-  interface Window {
-    electronAPI?: {
-      openFileDialog: () => Promise<string | null>
-      getVideoMetadata: (filePath: string) => Promise<{
-        duration: number
-        width: number
-        height: number
-        fps: number
-      }>
-      generateThumbnails: (filePath: string, count: number) => Promise<string[]>
-    }
-  }
-}
+import type { Clip, LaneId } from '../types'
 
 interface LaneProps {
-  laneId: 'left' | 'right'
+  laneId: LaneId
   title: string
 }
 
 export function Lane({ laneId, title }: LaneProps) {
   const lane = useEditorStore((state) =>
-    laneId === 'left' ? state.leftLane : state.rightLane
+    laneId === 'main' ? state.mainLane : state.subLane
   )
-  const leftLane = useEditorStore((state) => state.leftLane)
-  const rightLane = useEditorStore((state) => state.rightLane)
   const addClip = useEditorStore((state) => state.addClip)
   const getLaneDuration = useEditorStore((state) => state.getLaneDuration)
-
-  // Calculate max used duration for each clip index across both lanes
-  const getMaxDurationForIndex = (index: number): number => {
-    const leftClip = leftLane.clips[index]
-    const rightClip = rightLane.clips[index]
-    const leftDuration = leftClip ? leftClip.outPoint - leftClip.inPoint : 0
-    const rightDuration = rightClip ? rightClip.outPoint - rightClip.inPoint : 0
-    return Math.max(leftDuration, rightDuration, 1) // At least 1 to avoid division by zero
-  }
 
   const [isDragOver, setIsDragOver] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
 
   const laneDuration = getLaneDuration(laneId)
-  const canAddClip = lane.clips.length < 5
+  const canAddClip = lane.clips.length < 10
 
   const loadVideoFile = useCallback(async (filePath: string) => {
     if (!window.electronAPI) {
@@ -142,7 +116,7 @@ export function Lane({ laneId, title }: LaneProps) {
     setIsLoading(true)
 
     try {
-      const availableSlots = 5 - lane.clips.length
+      const availableSlots = 10 - lane.clips.length
       const filesToLoad = videoFiles.slice(0, availableSlots)
 
       for (const file of filesToLoad) {
@@ -176,18 +150,17 @@ export function Lane({ laneId, title }: LaneProps) {
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium text-white">{title}</h3>
         <span className="text-xs text-gray-500">
-          レーン尺: {formatTime(laneDuration)}
+          {lane.clips.length}クリップ / {formatTime(laneDuration)}
         </span>
       </div>
 
       {/* Clips Container */}
       <div className="flex items-start gap-3 min-h-[100px] overflow-x-auto pb-2">
-        {lane.clips.map((clip, index) => (
+        {lane.clips.map((clip) => (
           <ClipCard
             key={clip.id}
             clip={clip}
             laneId={laneId}
-            maxDuration={getMaxDurationForIndex(index)}
           />
         ))}
 
@@ -264,7 +237,7 @@ export function Lane({ laneId, title }: LaneProps) {
       {/* Max clips indicator */}
       {!canAddClip && (
         <p className="text-xs text-gray-500 mt-2">
-          最大クリップ数(5)に達しました
+          最大クリップ数(10)に達しました
         </p>
       )}
     </div>

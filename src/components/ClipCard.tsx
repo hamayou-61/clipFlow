@@ -1,28 +1,19 @@
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime } from '../utils/format'
-import type { Clip } from '../types'
+import type { Clip, LaneId } from '../types'
 
 interface ClipCardProps {
   clip: Clip
-  laneId: 'left' | 'right'
-  maxDuration: number // Maximum used duration across both lanes for proportional width
+  laneId: LaneId
 }
 
-export function ClipCard({ clip, laneId, maxDuration }: ClipCardProps) {
+export function ClipCard({ clip, laneId }: ClipCardProps) {
   const selectedClipId = useEditorStore((state) => state.selectedClipId)
   const selectClip = useEditorStore((state) => state.selectClip)
   const removeClip = useEditorStore((state) => state.removeClip)
 
   const isSelected = selectedClipId === clip.id
   const usedDuration = clip.outPoint - clip.inPoint
-
-  // Calculate proportional width (min 80px, max 200px, base 160px for maxDuration)
-  const baseWidth = 160
-  const minWidth = 80
-  const maxWidth = 200
-  const proportionalWidth = maxDuration > 0
-    ? Math.max(minWidth, Math.min(maxWidth, (usedDuration / maxDuration) * baseWidth))
-    : baseWidth
 
   const handleClick = () => {
     selectClip(laneId, clip.id)
@@ -36,10 +27,9 @@ export function ClipCard({ clip, laneId, maxDuration }: ClipCardProps) {
   return (
     <div
       onClick={handleClick}
-      style={{ width: `${proportionalWidth}px` }}
       className={`
         relative group flex-shrink-0 cursor-pointer rounded-lg overflow-hidden
-        border-2 transition-all duration-150
+        border-2 transition-all duration-150 w-32
         ${isSelected
           ? 'border-editor-accent shadow-lg shadow-editor-accent/20'
           : 'border-editor-border hover:border-gray-500'
