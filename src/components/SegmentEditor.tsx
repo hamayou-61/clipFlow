@@ -142,6 +142,8 @@ export function SegmentEditor() {
     try {
       const filePath = await window.electronAPI.openFileDialog()
       if (!filePath) return
+      // TEST: Add delay to see loading state
+      await new Promise(resolve => setTimeout(resolve, 500))
       await addClipToLane(laneId, filePath)
     } finally {
       setIsLoading(null)
@@ -257,9 +259,17 @@ export function SegmentEditor() {
 
         {/* Clip preview or drop zone */}
         {clip ? (
-          <>
+          <div
+            className="relative"
+            onDragOver={(e) => handleDragOver(e, laneId)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleDrop(e, laneId)}
+          >
             <div
-              className="flex items-center gap-3 p-2 bg-editor-surface rounded cursor-pointer hover:bg-editor-border transition-colors"
+              className={`
+                flex items-center gap-3 p-2 bg-editor-surface rounded cursor-pointer transition-colors
+                ${isDragOver ? 'opacity-50' : 'hover:bg-editor-border'}
+              `}
               onClick={() => selectClip(laneId, clip.id)}
             >
               {clip.thumbnails[0] ? (
@@ -288,7 +298,22 @@ export function SegmentEditor() {
                 </svg>
               </button>
             </div>
-          </>
+            {/* Loading overlay */}
+            {isLoading === laneId && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 rounded">
+                <svg className="w-8 h-8 animate-spin text-editor-accent" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              </div>
+            )}
+            {/* Drop overlay when dragging */}
+            {isDragOver && !isLoading && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-editor-accent/20 rounded border-2 border-dashed border-editor-accent">
+                <span className="text-sm text-editor-accent font-medium">ドロップで置き換え</span>
+              </div>
+            )}
+          </div>
         ) : (
           <div
             className={`
@@ -301,13 +326,10 @@ export function SegmentEditor() {
             onClick={() => handleAddClip(laneId)}
           >
             {isLoading === laneId ? (
-              <>
-                <svg className="w-6 h-6 animate-spin mb-2" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                <span className="text-xs">読込中...</span>
-              </>
+              <svg className="w-6 h-6 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
             ) : (
               <>
                 <svg className="w-8 h-8 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -399,7 +421,7 @@ export function SegmentEditor() {
             <div className="flex-1">
               <label className="block text-xs text-gray-500 mb-1">レイアウト</label>
               <div className="flex gap-1">
-                {(['single-main', 'split-h', 'split-v'] as LayoutType[]).map((lt) => (
+                {(['single-main', 'split-h', 'split-v', 'pip'] as LayoutType[]).map((lt) => (
                   <button
                     key={lt}
                     onClick={() => handleLayoutChange(lt)}
