@@ -133,6 +133,8 @@ export function ExportModal({ onClose }: ExportModalProps) {
         } : null,
         mainInPoint: seg.mainInPoint,
         subInPoint: seg.subInPoint,
+        pipPosition: seg.pipPosition,
+        pipSize: seg.pipSize,
       }
     })
 

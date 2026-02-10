@@ -1,7 +1,7 @@
 import React, { useCallback, useState, useEffect, useMemo, useRef, DragEvent } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime, generateId, parseTime, clamp, snapToGrid } from '../utils/format'
-import type { LayoutType, Segment, Clip, LaneId } from '../types'
+import type { LayoutType, Segment, Clip, LaneId, PipPosition, PipSize } from '../types'
 
 const LAYOUT_OPTIONS: { type: LayoutType; label: string; icon: JSX.Element }[] = [
   {
@@ -46,6 +46,19 @@ const LAYOUT_OPTIONS: { type: LayoutType; label: string; icon: JSX.Element }[] =
 ]
 
 type EditMode = 'trim' | 'crop'
+
+const PIP_POSITION_LABELS: Record<PipPosition, string> = {
+  'bottom-right': '右下',
+  'bottom-left': '左下',
+  'top-right': '右上',
+  'top-left': '左上',
+}
+
+const PIP_SIZE_LABELS: Record<PipSize, string> = {
+  '1/4': '1/4',
+  '1/3': '1/3',
+  '1/5': '1/5',
+}
 
 export function SegmentPanel() {
   const segments = useEditorStore((state) => state.segments)
@@ -519,9 +532,9 @@ export function SegmentPanel() {
                 </svg>
               </button>
             </div>
-            {/* Invisible drag overlay to capture all drag events */}
+            {/* Invisible drag overlay to capture all drag events - pointer-events-none to allow clicks through */}
             <div
-              className="absolute inset-0 z-10"
+              className="absolute inset-0 z-10 pointer-events-none"
               onDragOver={(e) => handleDragOver(e, laneId)}
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, laneId)}
@@ -959,6 +972,62 @@ export function SegmentPanel() {
                 ))}
               </div>
             </div>
+
+            {/* PiP Settings - only show when pip layout is selected */}
+            {selectedSegment.layoutType === 'pip' && (
+              <>
+                {/* Position selector */}
+                <div>
+                  <div className="text-xs text-gray-500 mb-2">ワイプ位置</div>
+                  <div className="grid grid-cols-2 gap-1 w-20">
+                    {(['top-left', 'top-right', 'bottom-left', 'bottom-right'] as PipPosition[]).map((pos) => (
+                      <button
+                        key={pos}
+                        onClick={() => updateSegment(selectedSegmentId!, { pipPosition: pos })}
+                        className={`w-9 h-7 rounded border transition-colors flex items-center justify-center ${
+                          (selectedSegment.pipPosition || 'bottom-right') === pos
+                            ? 'border-editor-accent bg-editor-accent/20'
+                            : 'border-editor-border hover:border-gray-500'
+                        }`}
+                        title={PIP_POSITION_LABELS[pos]}
+                      >
+                        <div
+                          className={`w-2 h-1.5 rounded-sm ${
+                            (selectedSegment.pipPosition || 'bottom-right') === pos
+                              ? 'bg-editor-accent'
+                              : 'bg-gray-500'
+                          }`}
+                          style={{
+                            marginTop: pos.startsWith('top') ? '-4px' : '4px',
+                            marginLeft: pos.endsWith('left') ? '-6px' : '6px',
+                          }}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Size selector */}
+                <div>
+                  <div className="text-xs text-gray-500 mb-2">ワイプサイズ</div>
+                  <div className="flex gap-1">
+                    {(['1/5', '1/4', '1/3'] as PipSize[]).map((size) => (
+                      <button
+                        key={size}
+                        onClick={() => updateSegment(selectedSegmentId!, { pipSize: size })}
+                        className={`px-3 py-1.5 text-xs rounded border transition-colors ${
+                          (selectedSegment.pipSize || '1/4') === size
+                            ? 'border-editor-accent bg-editor-accent/20 text-white'
+                            : 'border-editor-border text-gray-400 hover:border-gray-500'
+                        }`}
+                      >
+                        {PIP_SIZE_LABELS[size]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Duration Display */}
             <div>

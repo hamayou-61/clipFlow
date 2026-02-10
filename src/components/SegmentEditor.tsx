@@ -1,13 +1,26 @@
 import { useCallback, useState, useEffect, useMemo, DragEvent } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime, generateId } from '../utils/format'
-import type { LayoutType, Segment, Clip, LaneId } from '../types'
+import type { LayoutType, Segment, Clip, LaneId, PipPosition, PipSize } from '../types'
 
 const LAYOUT_LABELS: Record<LayoutType, string> = {
   'split-h': '左右分割',
   'split-v': '上下分割',
   'single-main': 'メインのみ',
   'pip': 'ワイプ',
+}
+
+const PIP_POSITION_LABELS: Record<PipPosition, string> = {
+  'bottom-right': '右下',
+  'bottom-left': '左下',
+  'top-right': '右上',
+  'top-left': '左上',
+}
+
+const PIP_SIZE_LABELS: Record<PipSize, string> = {
+  '1/4': '1/4',
+  '1/3': '1/3',
+  '1/5': '1/5',
 }
 
 const LAYOUT_ICONS: Record<LayoutType, JSX.Element> = {
@@ -450,6 +463,66 @@ export function SegmentEditor() {
               </p>
             </div>
           </div>
+
+          {/* PiP Settings - only show when pip layout is selected */}
+          {selectedSegment.layoutType === 'pip' && (
+            <div className="flex items-start gap-6 mb-4 p-3 bg-editor-surface rounded-lg">
+              {/* Position selector */}
+              <div>
+                <label className="block text-xs text-gray-500 mb-2">ワイプ位置</label>
+                <div className="grid grid-cols-2 gap-1 w-20">
+                  {(['top-left', 'top-right', 'bottom-left', 'bottom-right'] as PipPosition[]).map((pos) => (
+                    <button
+                      key={pos}
+                      onClick={() => updateSegment(selectedSegmentId!, { pipPosition: pos })}
+                      className={`
+                        w-9 h-7 rounded border transition-colors flex items-center justify-center
+                        ${(selectedSegment.pipPosition || 'bottom-right') === pos
+                          ? 'border-editor-accent bg-editor-accent/20'
+                          : 'border-editor-border hover:border-gray-500'
+                        }
+                      `}
+                      title={PIP_POSITION_LABELS[pos]}
+                    >
+                      <div
+                        className={`w-2 h-1.5 rounded-sm ${
+                          (selectedSegment.pipPosition || 'bottom-right') === pos
+                            ? 'bg-editor-accent'
+                            : 'bg-gray-500'
+                        }`}
+                        style={{
+                          marginTop: pos.startsWith('top') ? '-4px' : '4px',
+                          marginLeft: pos.endsWith('left') ? '-6px' : '6px',
+                        }}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Size selector */}
+              <div>
+                <label className="block text-xs text-gray-500 mb-2">ワイプサイズ</label>
+                <div className="flex gap-1">
+                  {(['1/5', '1/4', '1/3'] as PipSize[]).map((size) => (
+                    <button
+                      key={size}
+                      onClick={() => updateSegment(selectedSegmentId!, { pipSize: size })}
+                      className={`
+                        px-3 py-1.5 text-xs rounded border transition-colors
+                        ${(selectedSegment.pipSize || '1/4') === size
+                          ? 'border-editor-accent bg-editor-accent/20 text-white'
+                          : 'border-editor-border text-gray-400 hover:border-gray-500'
+                        }
+                      `}
+                    >
+                      {PIP_SIZE_LABELS[size]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Lane Sections */}
           <div className={`grid gap-4 ${selectedSegment.layoutType === 'single-main' ? 'grid-cols-1' : 'grid-cols-2'}`}>

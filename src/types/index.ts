@@ -26,6 +26,10 @@ export interface Lane {
 // Layout types for segments
 export type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'pip'
 
+// PiP (Picture-in-Picture) settings
+export type PipPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
+export type PipSize = '1/4' | '1/3' | '1/5'
+
 // Segment represents a portion of the output video with a specific layout
 export interface Segment {
   id: string
@@ -35,6 +39,9 @@ export interface Segment {
   subClipId: string | null   // Clip ID from sub lane (null if single-main)
   mainInPoint: number     // Start point within main clip
   subInPoint: number      // Start point within sub clip
+  // PiP settings (only used when layoutType === 'pip')
+  pipPosition?: PipPosition  // Default: 'bottom-right'
+  pipSize?: PipSize          // Default: '1/4'
 }
 
 export type AspectRatio = '16:9' | '9:16'

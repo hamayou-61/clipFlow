@@ -239,6 +239,8 @@ function formatDateTime(): string {
 // Video IPC Handlers
 
 type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'single-sub' | 'pip'
+type PipPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
+type PipSize = '1/4' | '1/3' | '1/5'
 
 interface ClipInfo {
   filePath: string
@@ -258,6 +260,8 @@ interface SegmentExport {
   subClip: ClipInfo | null
   mainInPoint: number
   subInPoint: number
+  pipPosition?: PipPosition
+  pipSize?: PipSize
 }
 
 interface BgmConfig {
@@ -472,8 +476,11 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         // Picture-in-Picture: main fullscreen, sub small in corner
         mainTargetWidth = outputWidth
         mainTargetHeight = outputHeight
-        subTargetWidth = Math.round(outputWidth / 4)
-        subTargetHeight = Math.round(outputHeight / 4)
+        // Calculate PiP size based on pipSize setting
+        const pipSize = segment.pipSize || '1/4'
+        const pipSizeRatio = pipSize === '1/3' ? 3 : pipSize === '1/5' ? 5 : 4
+        subTargetWidth = Math.round(outputWidth / pipSizeRatio)
+        subTargetHeight = Math.round(outputHeight / pipSizeRatio)
       } else {
         // Single mode: full frame
         mainTargetWidth = outputWidth
@@ -579,9 +586,26 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
 
         // Compose the two clips
         if (layoutType === 'pip') {
-          // PiP: overlay sub on main at bottom-right with margin
+          // PiP: overlay sub on main with margin
           const pipMargin = 40
-          videoFilters.push(`[${mainLabel}][${subLabel}]overlay=W-w-${pipMargin}:H-h-${pipMargin}[${segVideoLabel}]`)
+          const pipPosition = segment.pipPosition || 'bottom-right'
+          let overlayX: string
+          let overlayY: string
+          if (pipPosition === 'top-left') {
+            overlayX = String(pipMargin)
+            overlayY = String(pipMargin)
+          } else if (pipPosition === 'top-right') {
+            overlayX = `W-w-${pipMargin}`
+            overlayY = String(pipMargin)
+          } else if (pipPosition === 'bottom-left') {
+            overlayX = String(pipMargin)
+            overlayY = `H-h-${pipMargin}`
+          } else {
+            // bottom-right (default)
+            overlayX = `W-w-${pipMargin}`
+            overlayY = `H-h-${pipMargin}`
+          }
+          videoFilters.push(`[${mainLabel}][${subLabel}]overlay=${overlayX}:${overlayY}[${segVideoLabel}]`)
         } else {
           // Split: stack side-by-side or top-bottom
           const stackFilter = layoutType === 'split-h' ? 'hstack' : 'vstack'

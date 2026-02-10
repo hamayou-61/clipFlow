@@ -20,6 +20,8 @@ export interface VideoMetadata {
 }
 
 export type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'single-sub' | 'pip'
+export type PipPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
+export type PipSize = '1/4' | '1/3' | '1/5'
 
 export interface ClipInfo {
   filePath: string
@@ -39,6 +41,9 @@ export interface SegmentExport {
   subClip: ClipInfo | null
   mainInPoint: number
   subInPoint: number
+  // PiP settings (only used when layoutType === 'pip')
+  pipPosition?: PipPosition
+  pipSize?: PipSize
 }
 
 export interface BgmConfig {

@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime } from '../utils/format'
-import type { LayoutType, Clip } from '../types'
+import type { LayoutType, Clip, PipPosition, PipSize } from '../types'
 
 // Calculate target aspect ratio based on layout type
 function getTargetAspect(layoutType: LayoutType, isHorizontalOutput: boolean): number {
@@ -310,12 +310,33 @@ export function Preview() {
   const getPreviewStyle = () => {
     if (isPip) {
       // PiP mode - main fullscreen, sub small in corner
+      const pipPosition: PipPosition = currentSegment?.pipPosition || 'bottom-right'
+      const pipSize: PipSize = currentSegment?.pipSize || '1/4'
+      const sizePercent = pipSize === '1/3' ? '33%' : pipSize === '1/5' ? '20%' : '25%'
+
+      // Calculate position based on pipPosition
+      const positionStyle: React.CSSProperties = { position: 'absolute' as const }
+      if (pipPosition === 'top-left') {
+        positionStyle.left = '8px'
+        positionStyle.top = '8px'
+      } else if (pipPosition === 'top-right') {
+        positionStyle.right = '8px'
+        positionStyle.top = '8px'
+      } else if (pipPosition === 'bottom-left') {
+        positionStyle.left = '8px'
+        positionStyle.bottom = '8px'
+      } else {
+        // bottom-right (default)
+        positionStyle.right = '8px'
+        positionStyle.bottom = '8px'
+      }
+
       return {
         container: isHorizontalOutput
           ? { width: '480px', height: '270px' }
           : { width: '180px', height: '320px' },
         main: { width: '100%', height: '100%' },
-        sub: { position: 'absolute' as const, right: '8px', bottom: '8px', width: '25%', height: '25%', borderRadius: '4px', boxShadow: '0 2px 8px rgba(0,0,0,0.5)' },
+        sub: { ...positionStyle, width: sizePercent, height: sizePercent, borderRadius: '4px', boxShadow: '0 2px 8px rgba(0,0,0,0.5)' },
       }
     } else if (!isSplit) {
       // Single mode - full preview
