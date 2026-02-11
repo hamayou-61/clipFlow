@@ -16,6 +16,49 @@ export interface Clip {
   cropScale: number
 }
 
+// Edit mode for clip editing (trim or crop)
+export type EditMode = 'trim' | 'crop'
+
+// Export-related types
+export interface ClipInfo {
+  filePath: string
+  inPoint: number
+  outPoint: number
+  cropX: number
+  cropY: number
+  cropScale: number
+  width: number
+  height: number
+}
+
+export interface SegmentExport {
+  layoutType: LayoutType
+  duration: number
+  mainClip: ClipInfo | null
+  subClip: ClipInfo | null
+  mainInPoint: number
+  subInPoint: number
+  pipPosition?: PipPosition
+  pipSize?: PipSize
+}
+
+export interface BgmConfig {
+  filePath: string
+  volume: number
+  fadeIn: number
+  fadeOut: number
+}
+
+export interface ExportConfig {
+  outputPath: string
+  aspectRatio: AspectRatio
+  audioBalance: number
+  mainVolume: number
+  subVolume: number
+  segments: SegmentExport[]
+  bgm?: BgmConfig
+}
+
 export type LaneId = 'main' | 'sub'
 
 export interface Lane {

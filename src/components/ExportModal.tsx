@@ -1,44 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime } from '../utils/format'
-import type { LayoutType } from '../types'
-
-interface ClipInfo {
-  filePath: string
-  inPoint: number
-  outPoint: number
-  cropX: number
-  cropY: number
-  cropScale: number
-  width: number
-  height: number
-}
-
-interface SegmentExport {
-  layoutType: LayoutType
-  duration: number
-  mainClip: ClipInfo | null
-  subClip: ClipInfo | null
-  mainInPoint: number
-  subInPoint: number
-}
-
-interface BgmConfig {
-  filePath: string
-  volume: number
-  fadeIn: number
-  fadeOut: number
-}
-
-interface ExportConfig {
-  outputPath: string
-  aspectRatio: '16:9' | '9:16'
-  audioBalance: number
-  mainVolume: number
-  subVolume: number
-  segments: SegmentExport[]
-  bgm?: BgmConfig
-}
+import type { SegmentExport, ExportConfig } from '../types'
 
 interface ExportModalProps {
   onClose: () => void
@@ -90,7 +53,7 @@ export function ExportModal({ onClose }: ExportModalProps) {
   const handleExport = useCallback(async () => {
     if (!window.electronAPI || !savePath) return
     if (segments.length === 0) {
-      setExportError('セグメントが必要です')
+      setExportError('シーンが必要です')
       return
     }
 
@@ -230,7 +193,7 @@ export function ExportModal({ onClose }: ExportModalProps) {
 
           {/* Segment Count */}
           <div className="flex items-center justify-between text-sm">
-            <span className="text-gray-400">セグメント数:</span>
+            <span className="text-gray-400">シーン数:</span>
             <span className="text-white">{segments.length}</span>
           </div>
 

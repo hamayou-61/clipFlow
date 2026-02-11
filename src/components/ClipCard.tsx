@@ -66,7 +66,7 @@ export function ClipCard({ clip, laneId }: ClipCardProps) {
         <button
           onClick={handleDelete}
           className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center hover:bg-red-600"
-          title="クリップを削除"
+          title="動画を削除"
         >
           <svg
             className="w-3 h-3"

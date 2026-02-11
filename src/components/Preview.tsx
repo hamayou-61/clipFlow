@@ -1,61 +1,9 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
-import { formatTime } from '../utils/format'
-import type { LayoutType, Clip, PipPosition, PipSize } from '../types'
-
-// Calculate target aspect ratio based on layout type
-function getTargetAspect(layoutType: LayoutType, isHorizontalOutput: boolean): number {
-  if (layoutType === 'single-main' || layoutType === 'pip') {
-    return isHorizontalOutput ? 16 / 9 : 9 / 16
-  } else if (layoutType === 'split-h') {
-    return isHorizontalOutput ? 8 / 9 : 9 / 32
-  } else { // split-v
-    return isHorizontalOutput ? 32 / 9 : 9 / 8
-  }
-}
-
-// Calculate video style for proper crop display
-// Returns CSS properties for positioning the video correctly within its container
-// Uses "contain" behavior at cropScale=1 (entire video visible), zoom crops at cropScale>1
-function getVideoStyle(clip: Clip, layoutType: LayoutType, isHorizontalOutput: boolean): React.CSSProperties {
-  const targetAspect = getTargetAspect(layoutType, isHorizontalOutput)
-  const sourceAspect = clip.width / clip.height
-  const cropScale = clip.cropScale ?? 1
-
-  // Calculate video dimensions using "contain" logic at base scale
-  // At cropScale=1, the entire video fits within the frame (may have letterbox/pillarbox)
-  // At cropScale>1, video is zoomed and may overflow the frame
-  let videoWidth: number // as percentage of container
-  let videoHeight: number // as percentage of container
-
-  if (sourceAspect > targetAspect) {
-    // Video is wider than target - fit width to container, height is smaller (letterbox)
-    videoWidth = cropScale * 100
-    videoHeight = cropScale * (targetAspect / sourceAspect) * 100
-  } else {
-    // Video is taller than target - fit height to container, width is smaller (pillarbox)
-    videoHeight = cropScale * 100
-    videoWidth = cropScale * (sourceAspect / targetAspect) * 100
-  }
-
-  // Calculate max offset - only possible when video exceeds container (cropScale > 1 or partial overflow)
-  const maxOffsetX = Math.max(0, (videoWidth - 100) / 200) // as fraction of container
-  const maxOffsetY = Math.max(0, (videoHeight - 100) / 200) // as fraction of container
-
-  // Convert crop position (-1 to 1) to actual offset percentage
-  const offsetX = -clip.cropX * maxOffsetX * 100
-  const offsetY = -clip.cropY * maxOffsetY * 100
-
-  return {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    width: `${videoWidth}%`,
-    height: `${videoHeight}%`,
-    transform: `translate(calc(-50% + ${offsetX}%), calc(-50% + ${offsetY}%))`,
-    objectFit: 'fill' as const,
-  }
-}
+import { getVideoStyle } from '../utils/cropCalculation'
+import { PlaybackControls } from './PlaybackControls'
+import { VolumeControls } from './VolumeControls'
+import type { PipPosition, PipSize } from '../types'
 
 export function Preview() {
   const mainLane = useEditorStore((state) => state.mainLane)
@@ -84,7 +32,6 @@ export function Preview() {
   const [sliderValue, setSliderValue] = useState(0)
   const isDraggingRef = useRef(false)
   const prevSegmentIdRef = useRef<string | null>(null)
-  const [showVolumeControls, setShowVolumeControls] = useState(false)
 
   const duration = getOutputDuration()
   const currentSegment = getSegmentAtPosition(sliderValue)
@@ -150,7 +97,6 @@ export function Preview() {
     if (subVideoRef.current && subClip && currentSegment) {
       subVideoRef.current.currentTime = subClip.inPoint + currentSegment.subInPoint + positionInSegment
     }
-    // Sync BGM position (BGM plays from the start of the output)
     if (bgmAudioRef.current && bgmFilePath) {
       bgmAudioRef.current.currentTime = sliderValue
     }
@@ -160,10 +106,8 @@ export function Preview() {
   useEffect(() => {
     const currentSegmentId = currentSegment?.id || null
 
-    // If segment changed and we were playing, resume playback on new videos
     if (prevSegmentIdRef.current !== currentSegmentId && isPlayingRef.current) {
       const resumePlayback = async () => {
-        // Seek to correct position first
         if (mainVideoRef.current && mainClip && currentSegment) {
           mainVideoRef.current.currentTime = mainClip.inPoint + currentSegment.mainInPoint + positionInSegment
         }
@@ -171,12 +115,10 @@ export function Preview() {
           subVideoRef.current.currentTime = subClip.inPoint + currentSegment.subInPoint + positionInSegment
         }
 
-        // Resume playing
         try {
           await mainVideoRef.current?.play()
           await subVideoRef.current?.play()
         } catch {
-          // Video might not be ready yet, try again after a short delay
           setTimeout(async () => {
             try {
               await mainVideoRef.current?.play()
@@ -297,24 +239,21 @@ export function Preview() {
   const hasSegments = segments.length > 0
   const layoutType = currentSegment?.layoutType || 'split-h'
   const isHorizontalOutput = aspectRatio === '16:9'
-  const displayValue = Math.min(sliderValue, duration > 0 ? duration : 1)
 
   // Determine preview layout
   const isSplit = layoutType === 'split-h' || layoutType === 'split-v'
   const isPip = layoutType === 'pip'
-  const showMain = true // All layouts show main
+  const showMain = true
   const showSub = layoutType !== 'single-main'
   const isHorizontalSplit = layoutType === 'split-h'
 
   // Calculate preview dimensions
   const getPreviewStyle = () => {
     if (isPip) {
-      // PiP mode - main fullscreen, sub small in corner
       const pipPosition: PipPosition = currentSegment?.pipPosition || 'bottom-right'
       const pipSize: PipSize = currentSegment?.pipSize || '1/4'
       const sizePercent = pipSize === '1/3' ? '33%' : pipSize === '1/5' ? '20%' : '25%'
 
-      // Calculate position based on pipPosition
       const positionStyle: React.CSSProperties = { position: 'absolute' as const }
       if (pipPosition === 'top-left') {
         positionStyle.left = '8px'
@@ -326,7 +265,6 @@ export function Preview() {
         positionStyle.left = '8px'
         positionStyle.bottom = '8px'
       } else {
-        // bottom-right (default)
         positionStyle.right = '8px'
         positionStyle.bottom = '8px'
       }
@@ -339,7 +277,6 @@ export function Preview() {
         sub: { ...positionStyle, width: sizePercent, height: sizePercent, borderRadius: '4px', boxShadow: '0 2px 8px rgba(0,0,0,0.5)' },
       }
     } else if (!isSplit) {
-      // Single mode - full preview
       return {
         container: isHorizontalOutput
           ? { width: '480px', height: '270px' }
@@ -348,7 +285,6 @@ export function Preview() {
         sub: { width: '100%', height: '100%' },
       }
     } else if (isHorizontalSplit) {
-      // Split horizontal (side by side)
       return {
         container: isHorizontalOutput
           ? { width: '480px', height: '270px', flexDirection: 'row' as const }
@@ -357,7 +293,6 @@ export function Preview() {
         sub: { width: '50%', height: '100%' },
       }
     } else {
-      // Split vertical (stacked)
       return {
         container: isHorizontalOutput
           ? { width: '480px', height: '270px', flexDirection: 'column' as const }
@@ -434,147 +369,33 @@ export function Preview() {
       )}
 
       {/* Controls */}
-      <div className="flex items-center gap-4 max-w-3xl mx-auto">
-        {/* Play/Pause Button */}
-        <button
-          onClick={togglePlay}
-          disabled={!hasSegments}
-          className={`
-            w-10 h-10 rounded-full flex items-center justify-center transition-colors
-            ${hasSegments
-              ? 'bg-editor-accent hover:bg-editor-accent-hover text-white'
-              : 'bg-editor-border text-gray-600 cursor-not-allowed'
-            }
-          `}
-          title={isPlaying ? '一時停止 (Space)' : '再生 (Space)'}
-        >
-          {isPlaying ? (
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
-            </svg>
-          ) : (
-            <svg className="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          )}
-        </button>
+      <PlaybackControls
+        isPlaying={isPlaying}
+        hasSegments={hasSegments}
+        duration={duration}
+        currentTime={sliderValue}
+        onTogglePlay={togglePlay}
+        onSeek={handleSliderChange}
+        onSeekStart={handleSliderMouseDown}
+        onSeekEnd={handleSliderMouseUp}
+      />
 
-        {/* Seek Bar */}
-        <input
-          type="range"
-          min={0}
-          max={duration > 0 ? duration : 1}
-          step={0.01}
-          value={displayValue}
-          onChange={handleSliderChange}
-          onMouseDown={handleSliderMouseDown}
-          onMouseUp={handleSliderMouseUp}
-          onTouchStart={handleSliderMouseDown}
-          onTouchEnd={handleSliderMouseUp}
-          disabled={!hasSegments || duration <= 0}
-          className="flex-1 h-2 rounded-lg cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{
-            background: duration > 0
-              ? `linear-gradient(to right, #3b82f6 ${(displayValue / duration) * 100}%, #3a3a3a ${(displayValue / duration) * 100}%)`
-              : '#3a3a3a'
-          }}
-        />
-
-        {/* Time Display */}
-        <span className="text-sm text-gray-400 font-mono min-w-[100px] text-right">
-          {formatTime(displayValue)} / {formatTime(duration)}
-        </span>
-      </div>
-
-
-      {/* Volume Controls Toggle (accordion) */}
+      {/* Volume Controls */}
       {hasSegments && (
-        <div className="mt-2 max-w-3xl mx-auto flex flex-col items-end">
-          <button
-            onClick={() => setShowVolumeControls(!showVolumeControls)}
-            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors"
-          >
-            <svg
-              className={`w-3 h-3 transition-transform ${showVolumeControls ? 'rotate-90' : ''}`}
-              fill="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path d="M8 5v14l11-7z" />
-            </svg>
-            <span>動画音量設定</span>
-            {!showVolumeControls && (
-              <span className="text-gray-600 ml-2">
-                (メイン {Math.round(mainVolume * 100)}% / サブ {Math.round(subVolume * 100)}%)
-              </span>
-            )}
-          </button>
-
-          {showVolumeControls && (
-            <div className="mt-3 p-3 bg-editor-bg rounded-lg border border-editor-border w-full">
-              <div className="flex items-center gap-6 text-xs">
-                {/* Main Volume */}
-                <div className="flex items-center gap-2 flex-1">
-                  <span className="text-gray-500 w-12">メイン</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={2}
-                    step={0.05}
-                    value={mainVolume}
-                    onChange={(e) => setMainVolume(parseFloat(e.target.value))}
-                    className="flex-1 h-1.5 rounded-lg cursor-pointer"
-                    style={{
-                      background: `linear-gradient(to right, #3b82f6 ${(mainVolume / 2) * 100}%, #3a3a3a ${(mainVolume / 2) * 100}%)`
-                    }}
-                  />
-                  <span className="text-gray-400 w-10 text-right">{Math.round(mainVolume * 100)}%</span>
-                </div>
-
-                {/* Balance */}
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-500">M</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={audioBalance}
-                    onChange={(e) => setAudioBalance(parseInt(e.target.value))}
-                    className="w-20 h-1.5 rounded-lg cursor-pointer"
-                    style={{
-                      background: `linear-gradient(to right, #3b82f6 ${audioBalance}%, #3a3a3a ${audioBalance}%)`
-                    }}
-                  />
-                  <span className="text-gray-500">S</span>
-                </div>
-
-                {/* Sub Volume */}
-                <div className="flex items-center gap-2 flex-1">
-                  <span className="text-gray-500 w-12">サブ</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={2}
-                    step={0.05}
-                    value={subVolume}
-                    onChange={(e) => setSubVolume(parseFloat(e.target.value))}
-                    className="flex-1 h-1.5 rounded-lg cursor-pointer"
-                    style={{
-                      background: `linear-gradient(to right, #3b82f6 ${(subVolume / 2) * 100}%, #3a3a3a ${(subVolume / 2) * 100}%)`
-                    }}
-                  />
-                  <span className="text-gray-400 w-10 text-right">{Math.round(subVolume * 100)}%</span>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        <VolumeControls
+          mainVolume={mainVolume}
+          subVolume={subVolume}
+          audioBalance={audioBalance}
+          onMainVolumeChange={setMainVolume}
+          onSubVolumeChange={setSubVolume}
+          onAudioBalanceChange={setAudioBalance}
+        />
       )}
 
       {/* Help Text */}
       {!hasSegments && (
         <p className="text-center text-xs text-gray-600 mt-3">
-          セグメントを追加するとプレビューできます
+          シーンを追加するとプレビューできます
         </p>
       )}
     </section>

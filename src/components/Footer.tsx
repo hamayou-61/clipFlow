@@ -23,7 +23,7 @@ export function Footer() {
           </span>
           {!hasSegments && (
             <span className="text-xs text-gray-500">
-              (セグメントを追加してください)
+              (シーンを追加してください)
             </span>
           )}
         </div>
