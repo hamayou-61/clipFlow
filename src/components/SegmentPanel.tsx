@@ -683,13 +683,13 @@ export function SegmentPanel() {
                   className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
                     editMode === 'trim' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
                   }`}>
-                  表示範囲指定
+                  再生区間
                 </button>
                 <button onClick={() => setEditMode('crop')}
                   className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
                     editMode === 'crop' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
                   }`}>
-                  クロップ
+                  表示範囲
                 </button>
               </div>
               {editMode === 'trim' ? renderTrimEditor() : renderCropEditor()}
