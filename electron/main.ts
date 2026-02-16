@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, protocol, Menu } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
@@ -64,9 +64,53 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Create application menu
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: '編集',
+      submenu: [
+        {
+          label: 'シーンを削除',
+          accelerator: 'Delete',
+          click: () => {
+            mainWindow?.webContents.send('menu:deleteSegment')
+          },
+        },
+      ],
+    },
+    {
+      label: '表示',
+      submenu: [
+        {
+          label: 'フルスクリーン',
+          accelerator: 'F11',
+          click: () => {
+            if (mainWindow) {
+              mainWindow.setFullScreen(!mainWindow.isFullScreen())
+            }
+          },
+        },
+        { type: 'separator' },
+        {
+          label: '開発者ツール',
+          accelerator: 'F12',
+          click: () => {
+            mainWindow?.webContents.toggleDevTools()
+          },
+        },
+      ],
+    },
+  ]
+
+  const menu = Menu.buildFromTemplate(template)
+  Menu.setApplicationMenu(menu)
+
   // Register protocol handler for local video files with range request support
   protocol.handle('local-video', async (request) => {
     const filePath = decodeURIComponent(request.url.replace('local-video://', ''))
+    console.log('local-video request URL:', request.url)
+    console.log('Resolved file path:', filePath)
+    console.log('File exists:', fs.existsSync(filePath))
 
     // Determine content type based on file extension
     const ext = path.extname(filePath).toLowerCase()
@@ -253,13 +297,18 @@ interface ClipInfo {
   height: number
 }
 
+interface SubEntryExport {
+  clip: ClipInfo
+  inPoint: number    // Start point within the sub clip
+  duration: number   // Duration to use from this sub clip
+}
+
 interface SegmentExport {
   layoutType: LayoutType
   duration: number
   mainClip: ClipInfo | null
-  subClip: ClipInfo | null
+  subEntries: SubEntryExport[]  // Sub clips array for export
   mainInPoint: number
-  subInPoint: number
   pipPosition?: PipPosition
   pipSize?: PipSize
 }
@@ -408,7 +457,10 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
   // Pre-process segments to get input indices
   segments.forEach((seg) => {
     if (seg.mainClip) getInputIndex(seg.mainClip.filePath)
-    if (seg.subClip) getInputIndex(seg.subClip.filePath)
+    // Add all sub entries
+    seg.subEntries.forEach((entry) => {
+      getInputIndex(entry.clip.filePath)
+    })
   })
 
   // BGM input index (added last, with stream_loop option)
@@ -454,7 +506,7 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
 
     // Process each segment
     segments.forEach((seg, segIdx) => {
-      const { layoutType, duration, mainClip, subClip, mainInPoint, subInPoint } = seg
+      const { layoutType, duration, mainClip, subEntries, mainInPoint } = seg
 
       // Calculate target dimensions based on layout
       let mainTargetWidth: number, mainTargetHeight: number
@@ -477,7 +529,7 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         mainTargetWidth = outputWidth
         mainTargetHeight = outputHeight
         // Calculate PiP size based on pipSize setting
-        const pipSize = segment.pipSize || '1/4'
+        const pipSize = seg.pipSize || '1/4'
         const pipSizeRatio = pipSize === '1/3' ? 3 : pipSize === '1/5' ? 5 : 4
         subTargetWidth = Math.round(outputWidth / pipSizeRatio)
         subTargetHeight = Math.round(outputHeight / pipSizeRatio)
@@ -489,9 +541,11 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         subTargetHeight = outputHeight
       }
 
-      const buildClipFilter = (
+      // Build clip filter for a specific duration (not segment duration)
+      const buildClipFilterWithDuration = (
         clip: ClipInfo,
         inPointOffset: number,
+        clipDuration: number,
         targetWidth: number,
         targetHeight: number,
         label: string
@@ -499,7 +553,7 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         const inputIdx = getInputIndex(clip.filePath)
         const cropScale = clip.cropScale || 1
         const startTime = clip.inPoint + inPointOffset
-        const endTime = startTime + duration
+        const endTime = startTime + clipDuration
 
         const scaledWidth = Math.round(targetWidth * cropScale)
         const scaledHeight = Math.round(targetHeight * cropScale)
@@ -522,21 +576,40 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         return filterChain
       }
 
-      const buildAudioFilter = (
+      const buildClipFilter = (
         clip: ClipInfo,
         inPointOffset: number,
+        targetWidth: number,
+        targetHeight: number,
+        label: string
+      ): string => {
+        return buildClipFilterWithDuration(clip, inPointOffset, duration, targetWidth, targetHeight, label)
+      }
+
+      const buildAudioFilterWithDuration = (
+        clip: ClipInfo,
+        inPointOffset: number,
+        clipDuration: number,
         label: string
       ): string => {
         const inputIdx = getInputIndex(clip.filePath)
         const startTime = clip.inPoint + inPointOffset
-        const endTime = startTime + duration
+        const endTime = startTime + clipDuration
 
         if (fileHasAudio.get(clip.filePath)) {
           return `[${inputIdx}:a]atrim=start=${startTime}:end=${endTime},asetpts=PTS-STARTPTS[${label}]`
         } else {
           // No audio stream - generate silence
-          return `anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${label}]`
+          return `anullsrc=r=48000:cl=stereo,atrim=0:${clipDuration}[${label}]`
         }
+      }
+
+      const buildAudioFilter = (
+        clip: ClipInfo,
+        inPointOffset: number,
+        label: string
+      ): string => {
+        return buildAudioFilterWithDuration(clip, inPointOffset, duration, label)
       }
 
       const segVideoLabel = `segv${segIdx}`
@@ -554,10 +627,11 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
           audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${segAudioLabel}]`)
         }
       } else if (layoutType === 'single-sub') {
-        // Single sub clip
-        if (subClip) {
-          videoFilters.push(buildClipFilter(subClip, subInPoint, outputWidth, outputHeight, segVideoLabel))
-          videoFilters.push(buildAudioFilter(subClip, subInPoint, `${segAudioLabel}_sub`))
+        // Single sub clip (use first sub entry if available)
+        const firstEntry = subEntries[0]
+        if (firstEntry) {
+          videoFilters.push(buildClipFilter(firstEntry.clip, firstEntry.inPoint, outputWidth, outputHeight, segVideoLabel))
+          videoFilters.push(buildAudioFilter(firstEntry.clip, firstEntry.inPoint, `${segAudioLabel}_sub`))
           audioFilters.push(`[${segAudioLabel}_sub]volume=${subVolume}[${segAudioLabel}]`)
         } else {
           videoFilters.push(`color=c=black:s=${outputWidth}x${outputHeight}:d=${duration}[${segVideoLabel}]`)
@@ -576,10 +650,35 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
           videoFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${mainLabel}_a]`)
         }
 
-        if (subClip) {
-          videoFilters.push(buildClipFilter(subClip, subInPoint, subTargetWidth, subTargetHeight, subLabel))
-          videoFilters.push(buildAudioFilter(subClip, subInPoint, `${subLabel}_a`))
+        // Process sub entries - concatenate multiple sub clips into one stream
+        if (subEntries.length > 0) {
+          if (subEntries.length === 1) {
+            // Single sub entry - no concatenation needed
+            const entry = subEntries[0]
+            videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, subTargetWidth, subTargetHeight, subLabel))
+            videoFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, `${subLabel}_a`))
+          } else {
+            // Multiple sub entries - need to concatenate
+            const subVideoLabels: string[] = []
+            const subAudioLabels: string[] = []
+
+            subEntries.forEach((entry, entryIdx) => {
+              const entryVideoLabel = `seg${segIdx}_sub${entryIdx}`
+              const entryAudioLabel = `seg${segIdx}_sub${entryIdx}_a`
+
+              videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, subTargetWidth, subTargetHeight, entryVideoLabel))
+              videoFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, entryAudioLabel))
+
+              subVideoLabels.push(`[${entryVideoLabel}]`)
+              subAudioLabels.push(`[${entryAudioLabel}]`)
+            })
+
+            // Concatenate all sub entries into one stream
+            videoFilters.push(`${subVideoLabels.join('')}concat=n=${subEntries.length}:v=1:a=0[${subLabel}]`)
+            audioFilters.push(`${subAudioLabels.join('')}concat=n=${subEntries.length}:v=0:a=1[${subLabel}_a]`)
+          }
         } else {
+          // No sub entries - black frame with silence
           videoFilters.push(`color=c=black:s=${subTargetWidth}x${subTargetHeight}:d=${duration}[${subLabel}]`)
           videoFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${subLabel}_a]`)
         }
@@ -588,7 +687,7 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         if (layoutType === 'pip') {
           // PiP: overlay sub on main with margin
           const pipMargin = 40
-          const pipPosition = segment.pipPosition || 'bottom-right'
+          const pipPosition = seg.pipPosition || 'bottom-right'
           let overlayX: string
           let overlayY: string
           if (pipPosition === 'top-left') {

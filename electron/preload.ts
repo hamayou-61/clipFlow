@@ -10,6 +10,8 @@ export interface ElectronAPI {
   exportVideo: (config: ExportConfig) => Promise<void>
   onExportProgress: (callback: (progress: number) => void) => void
   cancelExport: () => void
+  // Menu events
+  onMenuDeleteSegment: (callback: () => void) => void
 }
 
 export interface VideoMetadata {
@@ -75,4 +77,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('export:progress', (_, progress) => callback(progress))
   },
   cancelExport: () => ipcRenderer.send('export:cancel'),
+  // Menu events
+  onMenuDeleteSegment: (callback: () => void) => {
+    ipcRenderer.on('menu:deleteSegment', () => callback())
+  },
 } satisfies ElectronAPI)

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Clip, Lane, Segment, AspectRatio, LaneId } from '../types'
+import type { Clip, Lane, Segment, AspectRatio, LaneId, SubEntry } from '../types'
 import { generateId } from '../utils/format'
 
 interface EditorState {
@@ -50,6 +50,12 @@ interface EditorState {
   reorderSegments: (fromIndex: number, toIndex: number) => void
   selectSegment: (segmentId: string | null) => void
 
+  // SubEntry Actions
+  addSubEntry: (segmentId: string, clipId: string) => void
+  removeSubEntry: (segmentId: string, index: number) => void
+  updateSubEntry: (segmentId: string, index: number, updates: Partial<SubEntry>) => void
+  reorderSubEntries: (segmentId: string, fromIndex: number, toIndex: number) => void
+
   // Other Actions
   setPreviewPosition: (position: number) => void
   setAspectRatio: (ratio: AspectRatio) => void
@@ -69,6 +75,7 @@ interface EditorState {
   getLaneDuration: (laneId: LaneId) => number
   getOutputDuration: () => number
   getClipById: (laneId: LaneId, clipId: string) => Clip | null
+  getSubEntryAtTime: (subEntries: SubEntry[], time: number) => { entry: SubEntry; index: number; offset: number } | null
   getSegmentAtPosition: (position: number) => Segment | null
 }
 
@@ -119,13 +126,27 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       updates.selectedLaneId = null
     }
 
-    // Also remove segments that use this clip
-    const newSegments = state.segments.filter(seg => {
-      if (laneId === 'main' && seg.mainClipId === clipId) return false
-      if (laneId === 'sub' && seg.subClipId === clipId) return false
-      return true
-    })
-    updates.segments = newSegments
+    // Also remove segments that use this clip (for main) or remove from subEntries (for sub)
+    if (laneId === 'main') {
+      updates.segments = state.segments.filter(seg => seg.mainClipId !== clipId)
+    } else {
+      // Remove the clipId from subEntries and redistribute durations
+      updates.segments = state.segments.map(seg => {
+        const filteredEntries = seg.subEntries.filter(e => e.clipId !== clipId)
+        if (filteredEntries.length === seg.subEntries.length) return seg
+
+        // Redistribute durations equally among remaining entries
+        const totalDuration = seg.duration
+        if (filteredEntries.length === 0) {
+          return { ...seg, subEntries: [] }
+        }
+        const perEntry = totalDuration / filteredEntries.length
+        return {
+          ...seg,
+          subEntries: filteredEntries.map(e => ({ ...e, duration: perEntry }))
+        }
+      })
+    }
 
     return updates
   }),
@@ -204,6 +225,100 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   selectSegment: (segmentId) => set({ selectedSegmentId: segmentId }),
 
+  // SubEntry Actions
+  addSubEntry: (segmentId, clipId) => set((state) => {
+    const segment = state.segments.find(s => s.id === segmentId)
+    if (!segment) return state
+    if (segment.subEntries.length >= 3) return state // Max 3 sub entries
+
+    const mainDuration = segment.duration
+    const newEntries: SubEntry[] = [...segment.subEntries, { clipId, inPoint: 0, duration: 0 }]
+    const perEntry = mainDuration / newEntries.length
+    const adjustedEntries = newEntries.map(e => ({ ...e, duration: perEntry }))
+
+    const newSegments = state.segments.map(s =>
+      s.id === segmentId ? { ...s, subEntries: adjustedEntries } : s
+    )
+    return { segments: newSegments }
+  }),
+
+  removeSubEntry: (segmentId, index) => set((state) => {
+    const segment = state.segments.find(s => s.id === segmentId)
+    if (!segment) return state
+    if (index < 0 || index >= segment.subEntries.length) return state
+
+    const newEntries = segment.subEntries.filter((_, i) => i !== index)
+    const mainDuration = segment.duration
+
+    // Redistribute durations
+    const adjustedEntries = newEntries.length > 0
+      ? newEntries.map(e => ({ ...e, duration: mainDuration / newEntries.length }))
+      : []
+
+    const newSegments = state.segments.map(s =>
+      s.id === segmentId ? { ...s, subEntries: adjustedEntries } : s
+    )
+    return { segments: newSegments }
+  }),
+
+  updateSubEntry: (segmentId, index, updates) => set((state) => {
+    const segment = state.segments.find(s => s.id === segmentId)
+    if (!segment) return state
+    if (index < 0 || index >= segment.subEntries.length) return state
+
+    const newEntries = segment.subEntries.map((e, i) =>
+      i === index ? { ...e, ...updates } : e
+    )
+
+    // If duration was updated, adjust other entries to maintain total duration
+    if (updates.duration !== undefined) {
+      const mainDuration = segment.duration
+      const newDuration = updates.duration
+      const oldDuration = segment.subEntries[index].duration
+      const diff = newDuration - oldDuration
+      const others = newEntries.filter((_, i) => i !== index)
+      const otherTotal = others.reduce((sum, e) => sum + e.duration, 0)
+
+      if (otherTotal > 0 && others.length > 0) {
+        // Adjust other entries proportionally
+        newEntries.forEach((e, i) => {
+          if (i !== index) {
+            const ratio = e.duration / otherTotal
+            e.duration = Math.max(0.1, e.duration - diff * ratio)
+          }
+        })
+
+        // Ensure total matches mainDuration
+        const currentTotal = newEntries.reduce((sum, e) => sum + e.duration, 0)
+        if (Math.abs(currentTotal - mainDuration) > 0.01) {
+          const scale = mainDuration / currentTotal
+          newEntries.forEach(e => { e.duration *= scale })
+        }
+      }
+    }
+
+    const newSegments = state.segments.map(s =>
+      s.id === segmentId ? { ...s, subEntries: newEntries } : s
+    )
+    return { segments: newSegments }
+  }),
+
+  reorderSubEntries: (segmentId, fromIndex, toIndex) => set((state) => {
+    const segment = state.segments.find(s => s.id === segmentId)
+    if (!segment) return state
+    if (fromIndex < 0 || fromIndex >= segment.subEntries.length) return state
+    if (toIndex < 0 || toIndex >= segment.subEntries.length) return state
+
+    const newEntries = [...segment.subEntries]
+    const [removed] = newEntries.splice(fromIndex, 1)
+    newEntries.splice(toIndex, 0, removed)
+
+    const newSegments = state.segments.map(s =>
+      s.id === segmentId ? { ...s, subEntries: newEntries } : s
+    )
+    return { segments: newSegments }
+  }),
+
   // Other Actions
   setPreviewPosition: (position) => set({ previewPosition: position }),
 
@@ -257,6 +372,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const state = get()
     const lane = laneId === 'main' ? state.mainLane : state.subLane
     return lane.clips.find(c => c.id === clipId) || null
+  },
+
+  getSubEntryAtTime: (subEntries: SubEntry[], time: number) => {
+    let elapsed = 0
+    for (let i = 0; i < subEntries.length; i++) {
+      const entry = subEntries[i]
+      if (time < elapsed + entry.duration) {
+        return { entry, index: i, offset: time - elapsed }
+      }
+      elapsed += entry.duration
+    }
+    // Return last entry if time exceeds total
+    if (subEntries.length > 0) {
+      const lastEntry = subEntries[subEntries.length - 1]
+      return { entry: lastEntry, index: subEntries.length - 1, offset: lastEntry.duration }
+    }
+    return null
   },
 
   getSegmentAtPosition: (position) => {

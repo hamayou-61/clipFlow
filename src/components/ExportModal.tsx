@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
 import { formatTime } from '../utils/format'
-import type { SegmentExport, ExportConfig } from '../types'
+import type { SegmentExport, ExportConfig, SubEntryExport } from '../types'
 
 interface ExportModalProps {
   onClose: () => void
@@ -67,9 +67,28 @@ export function ExportModal({ onClose }: ExportModalProps) {
       const mainClip = seg.mainClipId
         ? mainLane.clips.find(c => c.id === seg.mainClipId)
         : null
-      const subClip = seg.subClipId
-        ? subLane.clips.find(c => c.id === seg.subClipId)
-        : null
+
+      // Build subEntries export data
+      const subEntriesExport: SubEntryExport[] = seg.subEntries
+        .map(entry => {
+          const clip = subLane.clips.find(c => c.id === entry.clipId)
+          if (!clip) return null
+          return {
+            clip: {
+              filePath: clip.filePath,
+              inPoint: clip.inPoint,
+              outPoint: clip.outPoint,
+              cropX: clip.cropX,
+              cropY: clip.cropY,
+              cropScale: clip.cropScale ?? 1,
+              width: clip.width,
+              height: clip.height,
+            },
+            inPoint: entry.inPoint,
+            duration: entry.duration,
+          }
+        })
+        .filter((e): e is SubEntryExport => e !== null)
 
       return {
         layoutType: seg.layoutType,
@@ -84,18 +103,8 @@ export function ExportModal({ onClose }: ExportModalProps) {
           width: mainClip.width,
           height: mainClip.height,
         } : null,
-        subClip: subClip ? {
-          filePath: subClip.filePath,
-          inPoint: subClip.inPoint,
-          outPoint: subClip.outPoint,
-          cropX: subClip.cropX,
-          cropY: subClip.cropY,
-          cropScale: subClip.cropScale ?? 1,
-          width: subClip.width,
-          height: subClip.height,
-        } : null,
+        subEntries: subEntriesExport,
         mainInPoint: seg.mainInPoint,
-        subInPoint: seg.subInPoint,
         pipPosition: seg.pipPosition,
         pipSize: seg.pipSize,
       }

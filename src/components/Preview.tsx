@@ -42,12 +42,7 @@ export function Preview() {
     return mainLane.clips.find(c => c.id === currentSegment.mainClipId) || null
   }, [currentSegment, mainLane.clips])
 
-  const subClip = useMemo(() => {
-    if (!currentSegment?.subClipId) return null
-    return subLane.clips.find(c => c.id === currentSegment.subClipId) || null
-  }, [currentSegment, subLane.clips])
-
-  // Calculate position within segment
+  // Calculate position within segment (must be before sub clip calculations)
   const segmentStartPosition = useMemo(() => {
     if (!currentSegment) return 0
     let pos = 0
@@ -59,6 +54,43 @@ export function Preview() {
   }, [currentSegment, segments])
 
   const positionInSegment = sliderValue - segmentStartPosition
+
+  // Get current sub entry and clip based on position within segment
+  const { subClip, subEntryOffset } = useMemo(() => {
+    if (!currentSegment || currentSegment.subEntries.length === 0) {
+      return { subClip: null, subEntryOffset: 0 }
+    }
+
+    // Find the sub entry at the current position within segment
+    let elapsed = 0
+    for (const entry of currentSegment.subEntries) {
+      if (positionInSegment < elapsed + entry.duration) {
+        const clip = subLane.clips.find(c => c.id === entry.clipId) || null
+        const offset = positionInSegment - elapsed
+        return { subClip: clip, subEntryOffset: offset, currentEntry: entry }
+      }
+      elapsed += entry.duration
+    }
+
+    // Fallback to last entry
+    const lastEntry = currentSegment.subEntries[currentSegment.subEntries.length - 1]
+    const clip = subLane.clips.find(c => c.id === lastEntry.clipId) || null
+    return { subClip: clip, subEntryOffset: lastEntry.duration, currentEntry: lastEntry }
+  }, [currentSegment, subLane.clips, positionInSegment])
+
+  // Get current sub entry for seeking
+  const currentSubEntry = useMemo(() => {
+    if (!currentSegment || currentSegment.subEntries.length === 0) return null
+
+    let elapsed = 0
+    for (const entry of currentSegment.subEntries) {
+      if (positionInSegment < elapsed + entry.duration) {
+        return entry
+      }
+      elapsed += entry.duration
+    }
+    return currentSegment.subEntries[currentSegment.subEntries.length - 1]
+  }, [currentSegment, positionInSegment])
 
   // Sync slider value FROM store when not dragging
   useEffect(() => {
@@ -94,13 +126,14 @@ export function Preview() {
     if (mainVideoRef.current && mainClip && currentSegment) {
       mainVideoRef.current.currentTime = mainClip.inPoint + currentSegment.mainInPoint + positionInSegment
     }
-    if (subVideoRef.current && subClip && currentSegment) {
-      subVideoRef.current.currentTime = subClip.inPoint + currentSegment.subInPoint + positionInSegment
+    if (subVideoRef.current && subClip && currentSubEntry) {
+      // Use the sub entry's inPoint + offset within the entry
+      subVideoRef.current.currentTime = subClip.inPoint + currentSubEntry.inPoint + subEntryOffset
     }
     if (bgmAudioRef.current && bgmFilePath) {
       bgmAudioRef.current.currentTime = sliderValue
     }
-  }, [sliderValue, mainClip, subClip, currentSegment, positionInSegment, bgmFilePath])
+  }, [sliderValue, mainClip, subClip, currentSegment, currentSubEntry, positionInSegment, subEntryOffset, bgmFilePath])
 
   // Handle segment changes during playback
   useEffect(() => {
@@ -111,8 +144,8 @@ export function Preview() {
         if (mainVideoRef.current && mainClip && currentSegment) {
           mainVideoRef.current.currentTime = mainClip.inPoint + currentSegment.mainInPoint + positionInSegment
         }
-        if (subVideoRef.current && subClip && currentSegment) {
-          subVideoRef.current.currentTime = subClip.inPoint + currentSegment.subInPoint + positionInSegment
+        if (subVideoRef.current && subClip && currentSubEntry) {
+          subVideoRef.current.currentTime = subClip.inPoint + currentSubEntry.inPoint + subEntryOffset
         }
 
         try {
@@ -135,7 +168,7 @@ export function Preview() {
     }
 
     prevSegmentIdRef.current = currentSegmentId
-  }, [currentSegment, mainClip, subClip, positionInSegment])
+  }, [currentSegment, mainClip, subClip, currentSubEntry, positionInSegment, subEntryOffset])
 
   // Handle play/pause
   const togglePlay = useCallback(() => {
@@ -392,12 +425,6 @@ export function Preview() {
         />
       )}
 
-      {/* Help Text */}
-      {!hasSegments && (
-        <p className="text-center text-xs text-gray-600 mt-3">
-          シーンを追加するとプレビューできます
-        </p>
-      )}
     </section>
   )
 }

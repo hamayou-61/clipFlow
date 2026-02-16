@@ -21,11 +21,6 @@ export function Footer() {
           <span className="text-lg font-mono text-white">
             {formatTime(outputDuration)}
           </span>
-          {!hasSegments && (
-            <span className="text-xs text-gray-500">
-              (シーンを追加してください)
-            </span>
-          )}
         </div>
 
         <button

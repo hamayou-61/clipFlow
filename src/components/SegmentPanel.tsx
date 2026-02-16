@@ -5,6 +5,7 @@ import { loadVideoFile } from '../utils/videoLoader'
 import { calculateCropDimensions } from '../utils/cropCalculation'
 import { SegmentTabs } from './SegmentTabs'
 import { ClipSlot } from './ClipSlot'
+import { SubClipList } from './SubClipList'
 import { PipSettings } from './PipSettings'
 import type { LayoutType, Segment, Clip, LaneId, EditMode } from '../types'
 
@@ -67,10 +68,15 @@ export function SegmentPanel() {
   const updateClip = useEditorStore((state) => state.updateClip)
   const getOutputDuration = useEditorStore((state) => state.getOutputDuration)
   const reorderSegments = useEditorStore((state) => state.reorderSegments)
+  const addSubEntry = useEditorStore((state) => state.addSubEntry)
+  const removeSubEntry = useEditorStore((state) => state.removeSubEntry)
+  const updateSubEntry = useEditorStore((state) => state.updateSubEntry)
+  const reorderSubEntries = useEditorStore((state) => state.reorderSubEntries)
 
   const [editMode, setEditMode] = useState<EditMode>('trim')
   const [isLoading, setIsLoading] = useState<LaneId | null>(null)
   const [dragOverLane, setDragOverLane] = useState<LaneId | null>(null)
+  const [selectedSubEntryIndex, setSelectedSubEntryIndex] = useState<number | null>(null)
 
   // Trim state
   const [inValue, setInValue] = useState('')
@@ -84,6 +90,9 @@ export function SegmentPanel() {
   const [isCropDragging, setIsCropDragging] = useState(false)
   const cropDragStartRef = useRef({ x: 0, y: 0 })
   const initialCropRef = useRef({ x: 0, y: 0 })
+
+  // Track previous segment ID for detecting segment changes
+  const prevSegmentIdRef = useRef<string | null>(null)
 
   const outputDuration = getOutputDuration()
   const selectedSegment = segments.find((s) => s.id === selectedSegmentId)
@@ -99,23 +108,26 @@ export function SegmentPanel() {
   // Check if sub clip has fixed duration (split layout)
   const subClipConstraint = useMemo(() => {
     if (!selectedClipId || selectedLaneId !== 'sub') return null
-    const segment = segments.find((seg) => seg.subClipId === selectedClipId)
+    // Find segment containing this sub clip in subEntries
+    const segment = segments.find((seg) =>
+      seg.subEntries.some(e => e.clipId === selectedClipId)
+    )
     if (!segment) return null
     if (segment.layoutType !== 'split-h' && segment.layoutType !== 'split-v' && segment.layoutType !== 'pip') return null
-    const mainClip = segment.mainClipId
-      ? mainLane.clips.find((c) => c.id === segment.mainClipId)
-      : null
-    if (!mainClip) return null
-    const mainDuration = mainClip.outPoint - mainClip.inPoint
-    return { mainDuration, layoutType: segment.layoutType }
-  }, [selectedClipId, selectedLaneId, segments, mainLane.clips])
+
+    // For sub entries, the constraint is the entry's duration, not the main duration
+    const subEntry = segment.subEntries.find(e => e.clipId === selectedClipId)
+    if (!subEntry) return null
+
+    return { entryDuration: subEntry.duration, layoutType: segment.layoutType }
+  }, [selectedClipId, selectedLaneId, segments])
 
   // Get clip layout type for crop
   const clipLayoutType = useMemo((): LayoutType => {
     if (!selectedClipId || !selectedLaneId) return 'single-main'
     const segment = segments.find((seg) => {
       if (selectedLaneId === 'main') return seg.mainClipId === selectedClipId
-      return seg.subClipId === selectedClipId
+      return seg.subEntries.some(e => e.clipId === selectedClipId)
     })
     return segment?.layoutType || 'single-main'
   }, [selectedClipId, selectedLaneId, segments])
@@ -149,6 +161,16 @@ export function SegmentPanel() {
     })
   }, [segments, mainLane.clips, subLane.clips, getSegmentDuration, updateSegment])
 
+  // Reset clip selection when segment changes (but not on first mount)
+  useEffect(() => {
+    if (prevSegmentIdRef.current !== null && prevSegmentIdRef.current !== selectedSegmentId) {
+      // Clear clip selection when switching to a different segment
+      selectClip(null, null)
+      setSelectedSubEntryIndex(null)
+    }
+    prevSegmentIdRef.current = selectedSegmentId
+  }, [selectedSegmentId, selectClip])
+
   // Sync trim input values with selected clip
   useEffect(() => {
     if (selectedClip && !isEditingIn) {
@@ -159,10 +181,10 @@ export function SegmentPanel() {
     }
   }, [selectedClip, isEditingIn, isEditingOut])
 
-  // Auto-sync sub clip outPoint when used in split layout
+  // Auto-sync sub clip outPoint when used in split layout (based on entry duration)
   useEffect(() => {
     if (!selectedClip || !selectedLaneId || !subClipConstraint) return
-    const expectedOut = selectedClip.inPoint + subClipConstraint.mainDuration
+    const expectedOut = selectedClip.inPoint + subClipConstraint.entryDuration
     if (Math.abs(selectedClip.outPoint - expectedOut) > 0.01 && expectedOut <= selectedClip.duration) {
       updateClip(selectedLaneId, selectedClip.id, { outPoint: expectedOut })
     }
@@ -180,22 +202,22 @@ export function SegmentPanel() {
             layoutType: 'single-main',
             duration: 0,
             mainClipId: laneId === 'main' ? clip.id : null,
-            subClipId: laneId === 'sub' ? clip.id : null,
+            subEntries: [],
             mainInPoint: 0,
-            subInPoint: 0,
           }
           addSegment(newSegment)
         } else if (selectedSegment) {
           if (laneId === 'main') {
             updateSegment(selectedSegmentId, { mainClipId: clip.id, mainInPoint: 0 })
           } else if (laneId === 'sub' && selectedSegment.layoutType !== 'single-main') {
-            updateSegment(selectedSegmentId, { subClipId: clip.id, subInPoint: 0 })
+            // Add as sub entry instead of single subClipId
+            addSubEntry(selectedSegmentId, clip.id)
           }
         }
         selectClip(laneId, clip.id)
       }
     },
-    [addClip, segments.length, selectedSegmentId, selectedSegment, updateSegment, selectClip, addSegment]
+    [addClip, segments.length, selectedSegmentId, selectedSegment, updateSegment, selectClip, addSegment, addSubEntry]
   )
 
   // Handle file dialog
@@ -260,9 +282,8 @@ export function SegmentPanel() {
       layoutType: 'single-main',
       duration: 0,
       mainClipId: null,
-      subClipId: null,
+      subEntries: [],
       mainInPoint: 0,
-      subInPoint: 0,
     }
     addSegment(segment)
   }, [addSegment])
@@ -273,25 +294,24 @@ export function SegmentPanel() {
       if (!selectedSegmentId || !selectedSegment) return
       const updates: Partial<Segment> = { layoutType }
       if (layoutType === 'single-main') {
-        updates.subClipId = null
+        updates.subEntries = []
       }
       updateSegment(selectedSegmentId, updates)
     },
     [selectedSegmentId, selectedSegment, updateSegment]
   )
 
-  // Handle clip removal from segment
+  // Handle clip removal from segment (for main only, sub uses removeSubEntry)
   const handleRemoveClip = useCallback(
     (laneId: LaneId) => {
       if (!selectedSegmentId) return
       if (laneId === 'main') {
         updateSegment(selectedSegmentId, { mainClipId: null, mainInPoint: 0 })
-      } else {
-        updateSegment(selectedSegmentId, { subClipId: null, subInPoint: 0 })
+        if (selectedLaneId === laneId && selectedClipId) {
+          selectClip(null, null)
+        }
       }
-      if (selectedLaneId === laneId && selectedClipId) {
-        selectClip(null, null)
-      }
+      // Sub clips are handled via removeSubEntry in SubClipList
     },
     [selectedSegmentId, updateSegment, selectedLaneId, selectedClipId, selectClip]
   )
@@ -327,7 +347,7 @@ export function SegmentPanel() {
           if (!moveEvent.shiftKey) {
             deltaTime = snapToGrid(deltaTime, 0.5)
           }
-          const dur = subClipConstraint ? subClipConstraint.mainDuration : rangeDuration
+          const dur = subClipConstraint ? subClipConstraint.entryDuration : rangeDuration
           const newIn = clamp(startIn + deltaTime, 0, selectedClip.duration - dur)
           const newOut = newIn + dur
           updateClip(selectedLaneId, selectedClip.id, { inPoint: newIn, outPoint: newOut })
@@ -365,8 +385,8 @@ export function SegmentPanel() {
     const parsed = parseTime(inValue)
     if (parsed !== null) {
       if (subClipConstraint) {
-        const newIn = clamp(parsed, 0, selectedClip.duration - subClipConstraint.mainDuration)
-        const newOut = newIn + subClipConstraint.mainDuration
+        const newIn = clamp(parsed, 0, selectedClip.duration - subClipConstraint.entryDuration)
+        const newOut = newIn + subClipConstraint.entryDuration
         updateClip(selectedLaneId, selectedClip.id, { inPoint: newIn, outPoint: newOut })
       } else {
         const newIn = clamp(parsed, 0, selectedClip.outPoint - 0.1)
@@ -516,8 +536,8 @@ export function SegmentPanel() {
           </div>
         </div>
         {subClipConstraint && (
-          <div className="p-2 bg-editor-surface border border-editor-border rounded text-xs text-yellow-500">
-            尺はメイン動画に固定（{formatTime(subClipConstraint.mainDuration)}）
+          <div className="p-2 bg-editor-surface border border-editor-border rounded text-xs text-gray-400">
+            尺は割り当て時間に固定（{formatTime(subClipConstraint.entryDuration)}）
           </div>
         )}
       </div>
@@ -630,7 +650,7 @@ export function SegmentPanel() {
             {/* Duration Display */}
             <div>
               <div className="text-xs text-gray-500 mb-2">シーン尺</div>
-              <div className="px-3 py-2 text-sm bg-editor-surface border border-editor-border rounded text-white font-mono">
+              <div className="px-3 py-2 text-sm  rounded text-white font-mono">
                 {currentSegmentDuration > 0 ? formatTime(currentSegmentDuration) : '--:--'}
               </div>
             </div>
@@ -658,19 +678,38 @@ export function SegmentPanel() {
               onDrop={handleDrop}
             />
             {selectedSegment.layoutType !== 'single-main' && (
-              <ClipSlot
-                laneId="sub"
-                label={selectedSegment.layoutType === 'split-h' ? '右側（サブ）' : selectedSegment.layoutType === 'pip' ? 'サブ（ワイプ）' : '下側（サブ）'}
-                clip={getClip('sub', selectedSegment.subClipId)}
-                isSelected={selectedClipId === selectedSegment.subClipId && selectedLaneId === 'sub'}
-                isDragOver={dragOverLane === 'sub'}
+              <SubClipList
+                subEntries={selectedSegment.subEntries}
+                mainDuration={currentSegmentDuration}
+                clips={subLane.clips}
+                selectedEntryIndex={selectedSubEntryIndex}
                 isLoading={isLoading === 'sub'}
-                onSelectClip={selectClip}
-                onRemoveClip={handleRemoveClip}
-                onAddClip={handleAddClip}
-                onDragOver={handleDragOver}
+                onSelectEntry={(index) => {
+                  setSelectedSubEntryIndex(index)
+                  if (index !== null && selectedSegment.subEntries[index]) {
+                    selectClip('sub', selectedSegment.subEntries[index].clipId)
+                  } else {
+                    selectClip(null, null)
+                  }
+                }}
+                onAddEntry={() => handleAddClip('sub')}
+                onRemoveEntry={(index) => {
+                  removeSubEntry(selectedSegment.id, index)
+                  if (selectedSubEntryIndex === index) {
+                    setSelectedSubEntryIndex(null)
+                    selectClip(null, null)
+                  }
+                }}
+                onUpdateEntryDuration={(index, duration) => {
+                  updateSubEntry(selectedSegment.id, index, { duration })
+                }}
+                onReorderEntries={(fromIndex, toIndex) => {
+                  reorderSubEntries(selectedSegment.id, fromIndex, toIndex)
+                }}
+                onDragOver={(e) => handleDragOver(e, 'sub')}
                 onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
+                onDrop={(e) => handleDrop(e, 'sub')}
+                isDragOver={dragOverLane === 'sub'}
               />
             )}
           </div>
@@ -698,7 +737,7 @@ export function SegmentPanel() {
         </div>
       ) : (
         <div
-          className={`p-8 bg-editor-bg transition-colors ${dragOverLane === 'main' ? 'border-2 border-dashed border-editor-accent bg-editor-accent/10' : ''}`}
+          className="p-8 bg-editor-bg"
           onDragOver={(e) => handleDragOver(e, 'main')}
           onDragLeave={handleDragLeave}
           onDrop={(e) => handleDrop(e, 'main')}

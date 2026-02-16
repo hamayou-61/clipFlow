@@ -31,13 +31,19 @@ export interface ClipInfo {
   height: number
 }
 
+// Sub entry for export
+export interface SubEntryExport {
+  clip: ClipInfo
+  inPoint: number    // Start point within the sub clip
+  duration: number   // Duration to use from this sub clip
+}
+
 export interface SegmentExport {
   layoutType: LayoutType
   duration: number
   mainClip: ClipInfo | null
-  subClip: ClipInfo | null
+  subEntries: SubEntryExport[]  // Sub clips array for export
   mainInPoint: number
-  subInPoint: number
   pipPosition?: PipPosition
   pipSize?: PipSize
 }
@@ -73,15 +79,21 @@ export type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'pip'
 export type PipPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
 export type PipSize = '1/4' | '1/3' | '1/5'
 
+// Sub entry represents a sub clip with its playback settings
+export interface SubEntry {
+  clipId: string     // Clip ID from sub lane
+  inPoint: number    // Start point within the sub clip (seconds)
+  duration: number   // Duration to use from this sub clip (seconds)
+}
+
 // Segment represents a portion of the output video with a specific layout
 export interface Segment {
   id: string
   layoutType: LayoutType
   duration: number        // Duration of this segment in seconds
   mainClipId: string | null  // Clip ID from main lane
-  subClipId: string | null   // Clip ID from sub lane (null if single-main)
+  subEntries: SubEntry[]  // Sub clips array (max 3)
   mainInPoint: number     // Start point within main clip
-  subInPoint: number      // Start point within sub clip
   // PiP settings (only used when layoutType === 'pip')
   pipPosition?: PipPosition  // Default: 'bottom-right'
   pipSize?: PipSize          // Default: '1/4'
