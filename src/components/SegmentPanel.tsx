@@ -1,55 +1,17 @@
-import React, { useCallback, useState, useEffect, useMemo, useRef, DragEvent } from 'react'
-import { useEditorStore } from '../store/useEditorStore'
-import { formatTime, parseTime, clamp, snapToGrid } from '../utils/format'
+import { useCallback, useState, useEffect, useMemo, useRef, DragEvent } from 'react'
+import { useEditorStore, type PanelId } from '../store/useEditorStore'
+import { formatTime } from '../utils/format'
 import { loadVideoFile } from '../utils/videoLoader'
-import { calculateCropDimensions } from '../utils/cropCalculation'
 import { SegmentTabs } from './SegmentTabs'
-import { ClipSlot } from './ClipSlot'
+import { MainClipList } from './MainClipList'
 import { SubClipList } from './SubClipList'
 import { PipSettings } from './PipSettings'
-import type { LayoutType, Segment, Clip, LaneId, EditMode } from '../types'
-
-const LAYOUT_OPTIONS: { type: LayoutType; label: string; icon: JSX.Element }[] = [
-  {
-    type: 'single-main',
-    label: 'メインのみ',
-    icon: (
-      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="3" y="4" width="18" height="16" rx="1" />
-      </svg>
-    ),
-  },
-  {
-    type: 'split-h',
-    label: '左右分割',
-    icon: (
-      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="2" y="4" width="9" height="16" rx="1" />
-        <rect x="13" y="4" width="9" height="16" rx="1" />
-      </svg>
-    ),
-  },
-  {
-    type: 'split-v',
-    label: '上下分割',
-    icon: (
-      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="4" y="2" width="16" height="9" rx="1" />
-        <rect x="4" y="13" width="16" height="9" rx="1" />
-      </svg>
-    ),
-  },
-  {
-    type: 'pip',
-    label: 'ワイプ',
-    icon: (
-      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="3" y="4" width="18" height="16" rx="1" opacity="0.6" />
-        <rect x="13" y="12" width="7" height="6" rx="1" />
-      </svg>
-    ),
-  },
-]
+import { ImageOverlaySettings } from './ImageOverlaySettings'
+import { TrimEditor } from './TrimEditor'
+import { CropEditor } from './CropEditor'
+import { TelopButton } from './TelopPopover'
+import { LAYOUT_OPTIONS } from './layoutOptions'
+import type { LayoutType, Segment, LaneId, EditMode, TextTelopSettings } from '../types'
 
 export function SegmentPanel() {
   const segments = useEditorStore((state) => state.segments)
@@ -59,7 +21,7 @@ export function SegmentPanel() {
   const mainLane = useEditorStore((state) => state.mainLane)
   const subLane = useEditorStore((state) => state.subLane)
   const aspectRatio = useEditorStore((state) => state.aspectRatio)
-  const addClip = useEditorStore((state) => state.addClip)
+  const addClips = useEditorStore((state) => state.addClips)
   const addSegment = useEditorStore((state) => state.addSegment)
   const removeSegment = useEditorStore((state) => state.removeSegment)
   const updateSegment = useEditorStore((state) => state.updateSegment)
@@ -68,28 +30,23 @@ export function SegmentPanel() {
   const updateClip = useEditorStore((state) => state.updateClip)
   const getOutputDuration = useEditorStore((state) => state.getOutputDuration)
   const reorderSegments = useEditorStore((state) => state.reorderSegments)
-  const addSubEntry = useEditorStore((state) => state.addSubEntry)
+  const addMainEntries = useEditorStore((state) => state.addMainEntries)
+  const removeMainEntry = useEditorStore((state) => state.removeMainEntry)
+  const updateMainEntry = useEditorStore((state) => state.updateMainEntry)
+  const reorderMainEntries = useEditorStore((state) => state.reorderMainEntries)
+  const addSubEntries = useEditorStore((state) => state.addSubEntries)
   const removeSubEntry = useEditorStore((state) => state.removeSubEntry)
   const updateSubEntry = useEditorStore((state) => state.updateSubEntry)
   const reorderSubEntries = useEditorStore((state) => state.reorderSubEntries)
+  const swapPanelEntries = useEditorStore((state) => state.swapPanelEntries)
 
   const [editMode, setEditMode] = useState<EditMode>('trim')
   const [isLoading, setIsLoading] = useState<LaneId | null>(null)
   const [dragOverLane, setDragOverLane] = useState<LaneId | null>(null)
+  const [selectedMainEntryIndex, setSelectedMainEntryIndex] = useState<number | null>(null)
   const [selectedSubEntryIndex, setSelectedSubEntryIndex] = useState<number | null>(null)
-
-  // Trim state
-  const [inValue, setInValue] = useState('')
-  const [outValue, setOutValue] = useState('')
-  const [isEditingIn, setIsEditingIn] = useState(false)
-  const [isEditingOut, setIsEditingOut] = useState(false)
-  const trimSliderRef = useRef<HTMLDivElement>(null)
-
-  // Crop state
-  const cropContainerRef = useRef<HTMLDivElement>(null)
-  const [isCropDragging, setIsCropDragging] = useState(false)
-  const cropDragStartRef = useRef({ x: 0, y: 0 })
-  const initialCropRef = useRef({ x: 0, y: 0 })
+  const [showTelopPopover, setShowTelopPopover] = useState(false)
+  const telopPopoverRef = useRef<HTMLDivElement>(null)
 
   // Track previous segment ID for detecting segment changes
   const prevSegmentIdRef = useRef<string | null>(null)
@@ -105,17 +62,29 @@ export function SegmentPanel() {
     return lane.clips.find((c) => c.id === selectedClipId) || null
   }, [selectedClipId, selectedLaneId, mainLane, subLane])
 
+  // Check if main clip has fixed duration (based on entry)
+  const mainClipConstraint = useMemo(() => {
+    if (!selectedClipId || selectedLaneId !== 'main') return null
+    const segment = segments.find((seg) =>
+      seg.mainEntries.some(e => e.clipId === selectedClipId)
+    )
+    if (!segment) return null
+
+    const mainEntry = segment.mainEntries.find(e => e.clipId === selectedClipId)
+    if (!mainEntry) return null
+
+    return { entryDuration: mainEntry.duration, layoutType: segment.layoutType }
+  }, [selectedClipId, selectedLaneId, segments])
+
   // Check if sub clip has fixed duration (split layout)
   const subClipConstraint = useMemo(() => {
     if (!selectedClipId || selectedLaneId !== 'sub') return null
-    // Find segment containing this sub clip in subEntries
     const segment = segments.find((seg) =>
       seg.subEntries.some(e => e.clipId === selectedClipId)
     )
     if (!segment) return null
-    if (segment.layoutType !== 'split-h' && segment.layoutType !== 'split-v' && segment.layoutType !== 'pip') return null
+    if (segment.layoutType !== 'split-h' && segment.layoutType !== 'split-v' && segment.layoutType !== 'split-3h' && segment.layoutType !== 'pip') return null
 
-    // For sub entries, the constraint is the entry's duration, not the main duration
     const subEntry = segment.subEntries.find(e => e.clipId === selectedClipId)
     if (!subEntry) return null
 
@@ -126,98 +95,118 @@ export function SegmentPanel() {
   const clipLayoutType = useMemo((): LayoutType => {
     if (!selectedClipId || !selectedLaneId) return 'single-main'
     const segment = segments.find((seg) => {
-      if (selectedLaneId === 'main') return seg.mainClipId === selectedClipId
+      if (selectedLaneId === 'main') return seg.mainEntries.some(e => e.clipId === selectedClipId)
       return seg.subEntries.some(e => e.clipId === selectedClipId)
     })
     return segment?.layoutType || 'single-main'
   }, [selectedClipId, selectedLaneId, segments])
 
-  // Helper to get clip duration
-  const getClipDuration = useCallback(
-    (laneId: LaneId, clipId: string | null): number => {
-      if (!clipId) return 0
-      const lane = laneId === 'main' ? mainLane : subLane
-      const clip = lane.clips.find((c) => c.id === clipId)
-      return clip ? clip.outPoint - clip.inPoint : 0
-    },
-    [mainLane, subLane]
-  )
-
-  // Calculate segment duration (main clip determines)
+  // Calculate segment duration (sum of mainEntries)
   const getSegmentDuration = useCallback(
     (seg: Segment): number => {
-      return getClipDuration('main', seg.mainClipId)
+      return seg.mainEntries.reduce((sum, e) => sum + e.duration, 0)
     },
-    [getClipDuration]
+    []
   )
 
-  // Update segment durations when clips change
-  useEffect(() => {
-    segments.forEach((seg) => {
-      const calculatedDuration = getSegmentDuration(seg)
-      if (calculatedDuration > 0 && Math.abs(seg.duration - calculatedDuration) > 0.01) {
-        updateSegment(seg.id, { duration: calculatedDuration })
-      }
-    })
-  }, [segments, mainLane.clips, subLane.clips, getSegmentDuration, updateSegment])
-
-  // Reset clip selection when segment changes (but not on first mount)
+  // Reset clip selection when segment changes
   useEffect(() => {
     if (prevSegmentIdRef.current !== null && prevSegmentIdRef.current !== selectedSegmentId) {
-      // Clear clip selection when switching to a different segment
-      selectClip(null, null)
       setSelectedSubEntryIndex(null)
+
+      if (selectedSegment && selectedSegment.mainEntries.length > 0) {
+        setSelectedMainEntryIndex(0)
+        selectClip('main', selectedSegment.mainEntries[0].clipId)
+      } else {
+        setSelectedMainEntryIndex(null)
+        selectClip(null, null)
+      }
     }
     prevSegmentIdRef.current = selectedSegmentId
-  }, [selectedSegmentId, selectClip])
+  }, [selectedSegmentId, selectedSegment, selectClip])
 
-  // Sync trim input values with selected clip
+  // Close telop popover when clicking outside
   useEffect(() => {
-    if (selectedClip && !isEditingIn) {
-      setInValue(formatTime(selectedClip.inPoint))
+    if (!showTelopPopover) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (telopPopoverRef.current && !telopPopoverRef.current.contains(e.target as Node)) {
+        setShowTelopPopover(false)
+      }
     }
-    if (selectedClip && !isEditingOut) {
-      setOutValue(formatTime(selectedClip.outPoint))
-    }
-  }, [selectedClip, isEditingIn, isEditingOut])
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showTelopPopover])
 
-  // Auto-sync sub clip outPoint when used in split layout (based on entry duration)
+  // Auto-sync main clip outPoint based on entry duration
   useEffect(() => {
-    if (!selectedClip || !selectedLaneId || !subClipConstraint) return
+    if (!selectedClip || !selectedLaneId || selectedLaneId !== 'main' || !mainClipConstraint) return
+    const expectedOut = selectedClip.inPoint + mainClipConstraint.entryDuration
+    if (Math.abs(selectedClip.outPoint - expectedOut) > 0.01 && expectedOut <= selectedClip.duration) {
+      updateClip(selectedLaneId, selectedClip.id, { outPoint: expectedOut })
+    }
+  }, [selectedClip, selectedLaneId, mainClipConstraint, updateClip])
+
+  // Auto-sync sub clip outPoint when used in split layout
+  useEffect(() => {
+    if (!selectedClip || !selectedLaneId || selectedLaneId !== 'sub' || !subClipConstraint) return
     const expectedOut = selectedClip.inPoint + subClipConstraint.entryDuration
     if (Math.abs(selectedClip.outPoint - expectedOut) > 0.01 && expectedOut <= selectedClip.duration) {
       updateClip(selectedLaneId, selectedClip.id, { outPoint: expectedOut })
     }
   }, [selectedClip, selectedLaneId, subClipConstraint, updateClip])
 
-  // Add clip to lane and assign to segment
-  const addClipToLane = useCallback(
-    async (laneId: LaneId, filePath: string) => {
-      const clip = await loadVideoFile(filePath)
-      if (clip) {
-        addClip(laneId, clip)
+  // Add multiple clips to lane and assign to segment
+  const addClipsToLane = useCallback(
+    async (laneId: LaneId, filePaths: string[]) => {
+      const loadedClips = []
+      for (const filePath of filePaths) {
+        const clip = await loadVideoFile(filePath)
+        if (clip) {
+          loadedClips.push(clip)
+        }
+      }
+      if (loadedClips.length === 0) return
 
-        if (segments.length === 0 || !selectedSegmentId) {
+      addClips(laneId, loadedClips)
+
+      if (segments.length === 0 || !selectedSegmentId) {
+        if (laneId === 'main') {
+          const mainEntries = loadedClips.map(clip => ({
+            clipId: clip.id,
+            inPoint: 0,
+            duration: clip.outPoint - clip.inPoint,
+          }))
+          const totalDuration = mainEntries.reduce((sum, e) => sum + e.duration, 0)
+          const newSegment: Omit<Segment, 'id'> = {
+            layoutType: 'single-main',
+            duration: totalDuration,
+            mainEntries,
+            subEntries: [],
+          }
+          addSegment(newSegment)
+        } else {
           const newSegment: Omit<Segment, 'id'> = {
             layoutType: 'single-main',
             duration: 0,
-            mainClipId: laneId === 'main' ? clip.id : null,
+            mainEntries: [],
             subEntries: [],
-            mainInPoint: 0,
           }
           addSegment(newSegment)
-        } else if (selectedSegment) {
-          if (laneId === 'main') {
-            updateSegment(selectedSegmentId, { mainClipId: clip.id, mainInPoint: 0 })
-          } else if (laneId === 'sub' && selectedSegment.layoutType !== 'single-main') {
-            // Add as sub entry instead of single subClipId
-            addSubEntry(selectedSegmentId, clip.id)
-          }
         }
-        selectClip(laneId, clip.id)
+      } else if (selectedSegment) {
+        const clipIds = loadedClips.map(clip => clip.id)
+        if (laneId === 'main') {
+          addMainEntries(selectedSegmentId, clipIds)
+        } else if (laneId === 'sub' && selectedSegment.layoutType !== 'single-main') {
+          addSubEntries(selectedSegmentId, clipIds)
+        }
       }
+
+      selectClip(null, null)
+      setSelectedMainEntryIndex(null)
+      setSelectedSubEntryIndex(null)
     },
-    [addClip, segments.length, selectedSegmentId, selectedSegment, updateSegment, selectClip, addSegment, addSubEntry]
+    [addClips, segments.length, selectedSegmentId, selectedSegment, selectClip, addSegment, addMainEntries, addSubEntries]
   )
 
   // Handle file dialog
@@ -226,14 +215,14 @@ export function SegmentPanel() {
       if (!window.electronAPI || isLoading) return
       setIsLoading(laneId)
       try {
-        const filePath = await window.electronAPI.openFileDialog()
-        if (!filePath) return
-        await addClipToLane(laneId, filePath)
+        const filePaths = await window.electronAPI.openFileDialog()
+        if (!filePaths || filePaths.length === 0) return
+        await addClipsToLane(laneId, filePaths)
       } finally {
         setIsLoading(null)
       }
     },
-    [isLoading, addClipToLane]
+    [isLoading, addClipsToLane]
   )
 
   // Drag and drop handlers
@@ -258,22 +247,40 @@ export function SegmentPanel() {
       e.stopPropagation()
       setDragOverLane(null)
       if (isLoading) return
+
       const files = Array.from(e.dataTransfer.files)
-      const videoFile = files.find(
+      const videoFiles = files.filter(
         (file) =>
           file.type.startsWith('video/') || file.name.endsWith('.mp4') || file.name.endsWith('.mov')
       )
-      if (!videoFile) return
-      const filePath = (videoFile as File & { path?: string }).path
-      if (!filePath) return
+      if (videoFiles.length === 0) return
+
+      const filePaths = videoFiles
+        .map((file) => (file as File & { path?: string }).path)
+        .filter((path): path is string => !!path)
+      if (filePaths.length === 0) return
+
       setIsLoading(laneId)
       try {
-        await addClipToLane(laneId, filePath)
+        await addClipsToLane(laneId, filePaths)
       } finally {
         setIsLoading(null)
       }
     },
-    [isLoading, addClipToLane]
+    [isLoading, addClipsToLane]
+  )
+
+  // Handle cross-panel drop
+  const handleCrossDrop = useCallback(
+    (toPanel: PanelId) => (fromPanel: PanelId, entryIndex: number) => {
+      if (!selectedSegmentId) return
+      swapPanelEntries(selectedSegmentId, fromPanel, toPanel, entryIndex)
+      setDragOverLane(null)
+      setSelectedMainEntryIndex(null)
+      setSelectedSubEntryIndex(null)
+      selectClip(null, null)
+    },
+    [selectedSegmentId, swapPanelEntries, selectClip]
   )
 
   // Add new segment
@@ -281,9 +288,8 @@ export function SegmentPanel() {
     const segment: Omit<Segment, 'id'> = {
       layoutType: 'single-main',
       duration: 0,
-      mainClipId: null,
+      mainEntries: [],
       subEntries: [],
-      mainInPoint: 0,
     }
     addSegment(segment)
   }, [addSegment])
@@ -301,305 +307,27 @@ export function SegmentPanel() {
     [selectedSegmentId, selectedSegment, updateSegment]
   )
 
-  // Handle clip removal from segment (for main only, sub uses removeSubEntry)
-  const handleRemoveClip = useCallback(
-    (laneId: LaneId) => {
-      if (!selectedSegmentId) return
-      if (laneId === 'main') {
-        updateSegment(selectedSegmentId, { mainClipId: null, mainInPoint: 0 })
-        if (selectedLaneId === laneId && selectedClipId) {
-          selectClip(null, null)
-        }
-      }
-      // Sub clips are handled via removeSubEntry in SubClipList
+  // Handle telop update
+  const handleTelopUpdate = useCallback(
+    (updates: Partial<TextTelopSettings>) => {
+      if (!selectedSegment) return
+      updateSegment(selectedSegment.id, {
+        textTelop: {
+          text: selectedSegment.textTelop?.text || '',
+          position: selectedSegment.textTelop?.position || 'bottom',
+          fontSize: selectedSegment.textTelop?.fontSize || 'medium',
+          fontFamily: selectedSegment.textTelop?.fontFamily || 'sans-serif',
+          color: selectedSegment.textTelop?.color || 'white',
+          background: selectedSegment.textTelop?.background ?? true,
+          ...updates,
+        },
+      })
     },
-    [selectedSegmentId, updateSegment, selectedLaneId, selectedClipId, selectClip]
+    [selectedSegment, updateSegment]
   )
-
-  // Get clip by ID
-  const getClip = (laneId: LaneId, clipId: string | null): Clip | null => {
-    if (!clipId) return null
-    const lane = laneId === 'main' ? mainLane : subLane
-    return lane.clips.find((c) => c.id === clipId) || null
-  }
-
-  // ===== TRIM FUNCTIONS =====
-  const handleTrimMouseDown = useCallback(
-    (e: React.MouseEvent, handle: 'in' | 'out' | 'range') => {
-      if (!selectedClip || !selectedLaneId || !trimSliderRef.current) return
-      if (subClipConstraint && handle === 'out') return
-      e.preventDefault()
-      e.stopPropagation()
-      const rect = trimSliderRef.current.getBoundingClientRect()
-      const startX = e.clientX
-      const startIn = selectedClip.inPoint
-      const startOut = selectedClip.outPoint
-      const rangeDuration = startOut - startIn
-
-      const handleMouseMove = (moveEvent: MouseEvent) => {
-        const x = moveEvent.clientX - rect.left
-        const ratio = clamp(x / rect.width, 0, 1)
-
-        if (handle === 'range' || (subClipConstraint && handle === 'in')) {
-          const deltaX = moveEvent.clientX - startX
-          const deltaRatio = deltaX / rect.width
-          let deltaTime = deltaRatio * selectedClip.duration
-          if (!moveEvent.shiftKey) {
-            deltaTime = snapToGrid(deltaTime, 0.5)
-          }
-          const dur = subClipConstraint ? subClipConstraint.entryDuration : rangeDuration
-          const newIn = clamp(startIn + deltaTime, 0, selectedClip.duration - dur)
-          const newOut = newIn + dur
-          updateClip(selectedLaneId, selectedClip.id, { inPoint: newIn, outPoint: newOut })
-        } else if (handle === 'in') {
-          let newValue = ratio * selectedClip.duration
-          if (!moveEvent.shiftKey) {
-            newValue = snapToGrid(newValue, 0.5)
-          }
-          newValue = clamp(newValue, 0, selectedClip.outPoint - 0.1)
-          updateClip(selectedLaneId, selectedClip.id, { inPoint: newValue })
-        } else {
-          let newValue = ratio * selectedClip.duration
-          if (!moveEvent.shiftKey) {
-            newValue = snapToGrid(newValue, 0.5)
-          }
-          newValue = clamp(newValue, selectedClip.inPoint + 0.1, selectedClip.duration)
-          updateClip(selectedLaneId, selectedClip.id, { outPoint: newValue })
-        }
-      }
-
-      const handleMouseUp = () => {
-        window.removeEventListener('mousemove', handleMouseMove)
-        window.removeEventListener('mouseup', handleMouseUp)
-      }
-
-      window.addEventListener('mousemove', handleMouseMove)
-      window.addEventListener('mouseup', handleMouseUp)
-    },
-    [selectedClip, selectedLaneId, updateClip, subClipConstraint]
-  )
-
-  const handleInBlur = () => {
-    setIsEditingIn(false)
-    if (!selectedClip || !selectedLaneId) return
-    const parsed = parseTime(inValue)
-    if (parsed !== null) {
-      if (subClipConstraint) {
-        const newIn = clamp(parsed, 0, selectedClip.duration - subClipConstraint.entryDuration)
-        const newOut = newIn + subClipConstraint.entryDuration
-        updateClip(selectedLaneId, selectedClip.id, { inPoint: newIn, outPoint: newOut })
-      } else {
-        const newIn = clamp(parsed, 0, selectedClip.outPoint - 0.1)
-        updateClip(selectedLaneId, selectedClip.id, { inPoint: newIn })
-      }
-    } else {
-      setInValue(formatTime(selectedClip.inPoint))
-    }
-  }
-
-  const handleOutBlur = () => {
-    setIsEditingOut(false)
-    if (!selectedClip || !selectedLaneId || subClipConstraint) return
-    const parsed = parseTime(outValue)
-    if (parsed !== null) {
-      const newOut = clamp(parsed, selectedClip.inPoint + 0.1, selectedClip.duration)
-      updateClip(selectedLaneId, selectedClip.id, { outPoint: newOut })
-    } else {
-      setOutValue(formatTime(selectedClip.outPoint))
-    }
-  }
-
-  // ===== CROP FUNCTIONS =====
-  const handleCropMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      if (!selectedClip || !selectedLaneId) return
-      e.preventDefault()
-      setIsCropDragging(true)
-      cropDragStartRef.current = { x: e.clientX, y: e.clientY }
-      initialCropRef.current = { x: selectedClip.cropX, y: selectedClip.cropY }
-    },
-    [selectedClip, selectedLaneId]
-  )
-
-  useEffect(() => {
-    if (!isCropDragging) return
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!selectedClip || !selectedLaneId || !cropContainerRef.current) return
-      const rect = cropContainerRef.current.getBoundingClientRect()
-      const deltaX = (e.clientX - cropDragStartRef.current.x) / (rect.width / 4)
-      const deltaY = (e.clientY - cropDragStartRef.current.y) / (rect.height / 4)
-      const newCropX = clamp(initialCropRef.current.x + deltaX, -1, 1)
-      const newCropY = clamp(initialCropRef.current.y + deltaY, -1, 1)
-      updateClip(selectedLaneId, selectedClip.id, { cropX: newCropX, cropY: newCropY })
-    }
-    const handleMouseUp = () => setIsCropDragging(false)
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-  }, [isCropDragging, selectedClip, selectedLaneId, updateClip])
-
-  const handleCropReset = useCallback(() => {
-    if (!selectedClip || !selectedLaneId) return
-    updateClip(selectedLaneId, selectedClip.id, { cropX: 0, cropY: 0, cropScale: 1 })
-  }, [selectedClip, selectedLaneId, updateClip])
-
-  const handleScaleChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (!selectedClip || !selectedLaneId) return
-      updateClip(selectedLaneId, selectedClip.id, { cropScale: parseFloat(e.target.value) })
-    },
-    [selectedClip, selectedLaneId, updateClip]
-  )
-
-  // Render trim editor
-  const renderTrimEditor = () => {
-    if (!selectedClip) return null
-
-    const usedDuration = selectedClip.outPoint - selectedClip.inPoint
-    const inPercent = (selectedClip.inPoint / selectedClip.duration) * 100
-    const outPercent = (selectedClip.outPoint / selectedClip.duration) * 100
-    const handleWidth = 14
-
-    return (
-      <div className="space-y-4">
-        <div
-          ref={trimSliderRef}
-          className="relative select-none"
-          style={{ height: '50px', marginLeft: `${handleWidth}px`, marginRight: `${handleWidth}px` }}
-        >
-          <div className="absolute inset-0 rounded-lg overflow-hidden">
-            <div className="flex h-full">
-              {Array.from({ length: 10 }).map((_, i) => (
-                <div key={i} className="flex-1 h-full">
-                  {selectedClip.thumbnails[i] ? (
-                    <img src={selectedClip.thumbnails[i]} alt="" className="w-full h-full object-cover" draggable={false} />
-                  ) : (
-                    <div className="w-full h-full bg-editor-surface flex items-center justify-center">
-                      <span className="text-[8px] text-gray-600">{i + 1}</span>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="absolute top-0 bottom-0 left-0 bg-black/70 pointer-events-none" style={{ width: `${inPercent}%` }} />
-            <div className="absolute top-0 bottom-0 right-0 bg-black/70 pointer-events-none" style={{ width: `${100 - outPercent}%` }} />
-            <div className="absolute top-0 bottom-0" style={{ left: `${inPercent}%`, right: `${100 - outPercent}%` }}>
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-editor-accent" />
-              <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-editor-accent" />
-              <div className="absolute inset-0 cursor-grab active:cursor-grabbing" onMouseDown={(e) => handleTrimMouseDown(e, 'range')} />
-            </div>
-          </div>
-          <div
-            className="absolute top-0 bottom-0 flex items-center justify-center bg-editor-accent cursor-ew-resize hover:brightness-110 active:brightness-125 transition-all z-10"
-            style={{ width: `${handleWidth}px`, left: `calc(${inPercent}% - ${handleWidth}px)`, borderRadius: '6px 0 0 6px' }}
-            onMouseDown={(e) => handleTrimMouseDown(e, subClipConstraint ? 'range' : 'in')}
-          >
-            <svg width="6" height="16" viewBox="0 0 6 16" fill="none">
-              <path d="M4 2L1 8L4 14" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </div>
-          <div
-            className={`absolute top-0 bottom-0 flex items-center justify-center transition-all z-10 ${
-              subClipConstraint ? 'bg-gray-500 cursor-not-allowed' : 'bg-editor-accent cursor-ew-resize hover:brightness-110 active:brightness-125'
-            }`}
-            style={{ width: `${handleWidth}px`, right: `calc(${100 - outPercent}% - ${handleWidth}px)`, borderRadius: '0 6px 6px 0' }}
-            onMouseDown={(e) => handleTrimMouseDown(e, 'out')}
-          >
-            <svg width="6" height="16" viewBox="0 0 6 16" fill="none">
-              <path d="M2 2L5 8L2 14" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </div>
-        </div>
-        <div className="flex justify-between text-xs text-gray-500">
-          <span>0.0s</span>
-          <span>{formatTime(selectedClip.duration)}</span>
-        </div>
-        <div className="flex items-center gap-4 flex-wrap">
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-400">IN:</label>
-            <input type="text" value={inValue} onChange={(e) => setInValue(e.target.value)} onFocus={() => setIsEditingIn(true)} onBlur={handleInBlur}
-              className="w-20 px-2 py-1 text-sm font-mono bg-editor-surface border border-editor-border rounded text-white text-center focus:outline-none focus:border-editor-accent" />
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-400">OUT:</label>
-            <input type="text" value={outValue} onChange={(e) => setOutValue(e.target.value)} onFocus={() => setIsEditingOut(true)} onBlur={handleOutBlur} disabled={!!subClipConstraint}
-              className={`w-20 px-2 py-1 text-sm font-mono border border-editor-border rounded text-center focus:outline-none ${
-                subClipConstraint ? 'bg-editor-border text-gray-500 cursor-not-allowed' : 'bg-editor-surface text-white focus:border-editor-accent'
-              }`} />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-400">尺:</span>
-            <span className="text-sm font-mono text-editor-accent">{formatTime(usedDuration)}</span>
-          </div>
-        </div>
-        {subClipConstraint && (
-          <div className="p-2 bg-editor-surface border border-editor-border rounded text-xs text-gray-400">
-            尺は割り当て時間に固定（{formatTime(subClipConstraint.entryDuration)}）
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  // Render crop editor
-  const renderCropEditor = () => {
-    if (!selectedClip) return null
-
-    const cropScale = selectedClip.cropScale ?? 1
-    const dims = calculateCropDimensions(selectedClip, clipLayoutType, isVertical, 280, 180)
-    const layoutLabel = clipLayoutType === 'single-main' ? 'フル画面' : clipLayoutType === 'split-h' ? '左右分割' : clipLayoutType === 'split-v' ? '上下分割' : 'ワイプ'
-
-    return (
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-gray-500">レイアウト: {layoutLabel}</span>
-          <button onClick={handleCropReset} disabled={selectedClip.cropX === 0 && selectedClip.cropY === 0 && cropScale === 1}
-            className="px-2 py-1 text-xs text-gray-400 hover:text-white border border-editor-border rounded disabled:opacity-50">
-            リセット
-          </button>
-        </div>
-        <div className="flex justify-center">
-          <div ref={cropContainerRef} className="relative bg-black rounded-lg overflow-hidden cursor-move select-none flex items-center justify-center"
-            style={{ width: '300px', height: '200px' }} onMouseDown={handleCropMouseDown}>
-            <div className="relative" style={{ width: `${dims.containerWidth}px`, height: `${dims.containerHeight}px` }}>
-              <video key={`crop-${selectedClip.id}`} src={`local-video://${encodeURIComponent(selectedClip.filePath)}`}
-                className="absolute object-fill" style={{ left: `${dims.videoLeft}px`, top: `${dims.videoTop}px`, width: `${dims.videoWidth}px`, height: `${dims.videoHeight}px` }} muted />
-              <div className="absolute pointer-events-none" style={{ left: `${dims.videoLeft}px`, top: `${dims.videoTop}px`, width: `${dims.videoWidth}px`, height: `${dims.videoHeight}px` }}>
-                <svg className="w-full h-full">
-                  <defs>
-                    <mask id={`crop-mask-${selectedClip.id}`}>
-                      <rect width="100%" height="100%" fill="white" />
-                      <rect x={dims.frameLeft - dims.videoLeft} y={dims.frameTop - dims.videoTop} width={dims.frameWidth} height={dims.frameHeight} fill="black" />
-                    </mask>
-                  </defs>
-                  <rect width="100%" height="100%" fill="rgba(0, 0, 0, 0.6)" mask={`url(#crop-mask-${selectedClip.id})`} />
-                </svg>
-              </div>
-              <div className="absolute border-2 border-editor-accent" style={{ left: `${dims.frameLeft}px`, top: `${dims.frameTop}px`, width: `${dims.frameWidth}px`, height: `${dims.frameHeight}px` }} />
-            </div>
-          </div>
-        </div>
-        <div className="flex justify-center">
-          <div style={{ width: '300px' }}>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-xs text-gray-500">ズーム</label>
-              <span className="text-xs text-white">{(cropScale * 100).toFixed(0)}%</span>
-            </div>
-            <div className="relative">
-              <input type="range" min={0.5} max={2} step={0.05} value={cropScale} onChange={handleScaleChange} className="w-full h-2 rounded-lg cursor-pointer"
-                style={{ background: `linear-gradient(to right, #3b82f6 ${((cropScale - 0.5) / 1.5) * 100}%, #3a3a3a ${((cropScale - 0.5) / 1.5) * 100}%)` }} />
-              <div className="absolute top-0 w-px h-2 bg-white pointer-events-none" style={{ left: `${((1.0 - 0.5) / 1.5) * 100}%` }} />
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
 
   const currentSegmentDuration = selectedSegment ? getSegmentDuration(selectedSegment) : 0
+  const clipConstraint = selectedLaneId === 'main' ? mainClipConstraint : subClipConstraint
 
   return (
     <div className="bg-editor-surface border-t border-editor-border">
@@ -624,13 +352,16 @@ export function SegmentPanel() {
               <div className="text-xs text-gray-500 mb-2">レイアウト</div>
               <div className="flex gap-1">
                 {LAYOUT_OPTIONS.map((opt) => (
-                  <button key={opt.type} onClick={() => handleLayoutChange(opt.type)}
+                  <button
+                    key={opt.type}
+                    onClick={() => handleLayoutChange(opt.type)}
                     className={`p-2 rounded border transition-colors ${
                       selectedSegment.layoutType === opt.type
                         ? 'border-editor-accent bg-editor-accent/20 text-white'
                         : 'border-editor-border text-gray-400 hover:border-gray-500'
                     }`}
-                    title={opt.label}>
+                    title={opt.label}
+                  >
                     {opt.icon}
                   </button>
                 ))}
@@ -642,17 +373,149 @@ export function SegmentPanel() {
               <PipSettings
                 pipPosition={selectedSegment.pipPosition || 'bottom-right'}
                 pipSize={selectedSegment.pipSize || '1/4'}
-                onPositionChange={(pos) => updateSegment(selectedSegmentId!, { pipPosition: pos })}
-                onSizeChange={(size) => updateSegment(selectedSegmentId!, { pipSize: size })}
+                pipOrientation={selectedSegment.pipOrientation || 'horizontal'}
+                onPositionChange={(pos) => updateSegment(selectedSegment.id, { pipPosition: pos })}
+                onSizeChange={(size) => updateSegment(selectedSegment.id, { pipSize: size })}
+                onOrientationChange={(orientation) => updateSegment(selectedSegment.id, { pipOrientation: orientation })}
               />
             )}
 
             {/* Duration Display */}
             <div>
               <div className="text-xs text-gray-500 mb-2">シーン尺</div>
-              <div className="px-3 py-2 text-sm  rounded text-white font-mono">
+              <div className="px-3 py-2 text-sm rounded text-white font-mono">
                 {currentSegmentDuration > 0 ? formatTime(currentSegmentDuration) : '--:--'}
               </div>
+            </div>
+
+            {/* Telop Button & Popover */}
+            <div className="relative" ref={telopPopoverRef}>
+              <TelopButton
+                segment={selectedSegment}
+                isOpen={showTelopPopover}
+                onToggle={() => setShowTelopPopover(!showTelopPopover)}
+              />
+
+              {showTelopPopover && (
+                <div className="absolute top-full left-0 mt-2 p-3 bg-editor-bg border border-editor-border rounded-lg shadow-lg z-50 w-64">
+                  <div className="text-xs text-gray-400 mb-2">テロップ</div>
+                  <textarea
+                    value={selectedSegment.textTelop?.text || ''}
+                    onChange={(e) => handleTelopUpdate({ text: e.target.value })}
+                    placeholder="テキストを入力..."
+                    className="w-full px-2 py-1.5 text-sm bg-editor-surface border border-editor-border rounded text-white placeholder-gray-500 resize-none focus:outline-none focus:border-editor-accent"
+                    rows={2}
+                  />
+
+                  {/* Position */}
+                  <div className="flex items-center gap-2 mt-3">
+                    <span className="text-xs text-gray-500 w-12">位置</span>
+                    <div className="flex gap-1">
+                      {(['top', 'center', 'bottom'] as const).map((pos) => (
+                        <button
+                          key={pos}
+                          onClick={() => handleTelopUpdate({ position: pos })}
+                          className={`px-2 py-0.5 text-xs rounded border transition-colors ${
+                            (selectedSegment.textTelop?.position || 'bottom') === pos
+                              ? 'border-editor-accent bg-editor-accent/20 text-white'
+                              : 'border-editor-border text-gray-400 hover:border-gray-500'
+                          }`}
+                        >
+                          {pos === 'top' ? '上' : pos === 'center' ? '中' : '下'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Font Size */}
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className="text-xs text-gray-500 w-12">サイズ</span>
+                    <div className="flex gap-1">
+                      {(['small', 'medium', 'large'] as const).map((size) => (
+                        <button
+                          key={size}
+                          onClick={() => handleTelopUpdate({ fontSize: size })}
+                          className={`px-2 py-0.5 text-xs rounded border transition-colors ${
+                            (selectedSegment.textTelop?.fontSize || 'medium') === size
+                              ? 'border-editor-accent bg-editor-accent/20 text-white'
+                              : 'border-editor-border text-gray-400 hover:border-gray-500'
+                          }`}
+                        >
+                          {size === 'small' ? '小' : size === 'medium' ? '中' : '大'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Font Family */}
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className="text-xs text-gray-500 w-12">書体</span>
+                    <div className="flex gap-1">
+                      {(['sans-serif', 'serif'] as const).map((font) => (
+                        <button
+                          key={font}
+                          onClick={() => handleTelopUpdate({ fontFamily: font })}
+                          className={`px-2 py-0.5 text-xs rounded border transition-colors ${
+                            (selectedSegment.textTelop?.fontFamily || 'sans-serif') === font
+                              ? 'border-editor-accent bg-editor-accent/20 text-white'
+                              : 'border-editor-border text-gray-400 hover:border-gray-500'
+                          }`}
+                          style={{ fontFamily: font === 'serif' ? 'Georgia, serif' : 'sans-serif' }}
+                        >
+                          {font === 'sans-serif' ? 'ゴシック' : '明朝'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Color & Background */}
+                  <div className="flex items-center gap-4 mt-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">色</span>
+                      <div className="flex gap-1">
+                        {(['white', 'black'] as const).map((color) => (
+                          <button
+                            key={color}
+                            onClick={() => handleTelopUpdate({ color })}
+                            className={`w-5 h-5 rounded border-2 transition-colors ${
+                              (selectedSegment.textTelop?.color || 'white') === color
+                                ? 'border-editor-accent'
+                                : 'border-editor-border'
+                            }`}
+                            style={{ backgroundColor: color }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">背景</span>
+                      <button
+                        onClick={() => handleTelopUpdate({ background: !(selectedSegment.textTelop?.background ?? true) })}
+                        className={`w-5 h-5 rounded border flex items-center justify-center text-xs transition-colors ${
+                          (selectedSegment.textTelop?.background ?? true)
+                            ? 'border-editor-accent bg-editor-accent text-white'
+                            : 'border-editor-border text-gray-500'
+                        }`}
+                      >
+                        {(selectedSegment.textTelop?.background ?? true) && '✓'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Clear Button */}
+                  {selectedSegment.textTelop?.text && (
+                    <button
+                      onClick={() => {
+                        updateSegment(selectedSegment.id, { textTelop: undefined })
+                        setShowTelopPopover(false)
+                      }}
+                      className="mt-3 text-xs text-red-400 hover:text-red-300"
+                    >
+                      クリア
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Delete Button */}
@@ -661,30 +524,154 @@ export function SegmentPanel() {
             </button>
           </div>
 
-          {/* Clip Slots */}
-          <div className={`grid gap-4 mb-4 ${selectedSegment.layoutType === 'single-main' ? 'grid-cols-1' : 'grid-cols-2'}`}>
-            <ClipSlot
-              laneId="main"
-              label={selectedSegment.layoutType === 'split-h' ? '左側（メイン）' : selectedSegment.layoutType === 'split-v' ? '上側（メイン）' : selectedSegment.layoutType === 'pip' ? 'メイン（全画面）' : 'メイン'}
-              clip={getClip('main', selectedSegment.mainClipId)}
-              isSelected={selectedClipId === selectedSegment.mainClipId && selectedLaneId === 'main'}
-              isDragOver={dragOverLane === 'main'}
+          {/* Clip Lists */}
+          <div className={`grid gap-4 ${selectedClip ? '' : 'mb-4'} ${selectedSegment.layoutType === 'single-main' ? 'grid-cols-1' : selectedSegment.layoutType === 'split-3h' ? 'grid-cols-3' : 'grid-cols-2'}`}>
+            {/* Sub1 for split-3h (left) */}
+            {selectedSegment.layoutType === 'split-3h' && (
+              <SubClipList
+                subEntries={selectedSegment.subEntries.slice(0, 1)}
+                mainDuration={currentSegmentDuration}
+                clips={subLane.clips}
+                selectedEntryIndex={selectedSubEntryIndex === 0 ? 0 : null}
+                isLoading={isLoading === 'sub'}
+                label="左側（サブ1）"
+                maxEntries={1}
+                panelId="sub1"
+                onSelectEntry={(index) => {
+                  if (index !== null) {
+                    setSelectedMainEntryIndex(null)
+                    setSelectedSubEntryIndex(0)
+                    if (selectedSegment.subEntries[0]) {
+                      selectClip('sub', selectedSegment.subEntries[0].clipId)
+                    }
+                  } else {
+                    setSelectedSubEntryIndex(null)
+                    selectClip(null, null)
+                  }
+                }}
+                onAddEntry={() => handleAddClip('sub')}
+                onRemoveEntry={() => {
+                  removeSubEntry(selectedSegment.id, 0)
+                  if (selectedSubEntryIndex === 0) {
+                    setSelectedSubEntryIndex(null)
+                    selectClip(null, null)
+                  }
+                }}
+                onUpdateEntryDuration={(_, duration) => {
+                  updateSubEntry(selectedSegment.id, 0, { duration })
+                }}
+                onReorderEntries={() => {}}
+                onDragOver={(e) => handleDragOver(e, 'sub')}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, 'sub')}
+                isDragOver={dragOverLane === 'sub'}
+                onCrossDrop={handleCrossDrop('sub1')}
+                isEditing={selectedLaneId === 'sub' && selectedSubEntryIndex === 0 && selectedClip !== null}
+                volume={selectedSegment.subVolume ?? 1}
+                onVolumeChange={(volume) => updateSegment(selectedSegment.id, { subVolume: volume })}
+                fitMode={selectedSegment.subFitMode ?? 'cover'}
+                onFitModeChange={(mode) => updateSegment(selectedSegment.id, { subFitMode: mode })}
+              />
+            )}
+
+            <MainClipList
+              mainEntries={selectedSegment.mainEntries}
+              clips={mainLane.clips}
+              selectedEntryIndex={selectedMainEntryIndex}
               isLoading={isLoading === 'main'}
-              onSelectClip={selectClip}
-              onRemoveClip={handleRemoveClip}
-              onAddClip={handleAddClip}
-              onDragOver={handleDragOver}
+              label={selectedSegment.layoutType === 'split-h' ? '左側（メイン）' : selectedSegment.layoutType === 'split-v' ? '上側（メイン）' : selectedSegment.layoutType === 'split-3h' ? '中央（メイン）' : selectedSegment.layoutType === 'pip' ? 'メイン（全画面）' : 'メイン動画'}
+              maxEntries={selectedSegment.layoutType === 'split-3h' ? 1 : undefined}
+              panelId="main"
+              onSelectEntry={(index) => {
+                setSelectedSubEntryIndex(null)
+                setSelectedMainEntryIndex(index)
+                if (index !== null && selectedSegment.mainEntries[index]) {
+                  selectClip('main', selectedSegment.mainEntries[index].clipId)
+                } else {
+                  selectClip(null, null)
+                }
+              }}
+              onAddEntry={() => handleAddClip('main')}
+              onRemoveEntry={(index) => {
+                removeMainEntry(selectedSegment.id, index)
+                if (selectedMainEntryIndex === index) {
+                  setSelectedMainEntryIndex(null)
+                  selectClip(null, null)
+                }
+              }}
+              onUpdateEntryDuration={(index, duration) => {
+                updateMainEntry(selectedSegment.id, index, { duration })
+              }}
+              onReorderEntries={(fromIndex, toIndex) => {
+                reorderMainEntries(selectedSegment.id, fromIndex, toIndex)
+              }}
+              onDragOver={(e) => handleDragOver(e, 'main')}
               onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
+              onDrop={(e) => handleDrop(e, 'main')}
+              isDragOver={dragOverLane === 'main'}
+              onCrossDrop={handleCrossDrop('main')}
+              isEditing={selectedLaneId === 'main' && selectedClip !== null}
+              volume={selectedSegment.mainVolume ?? 1}
+              onVolumeChange={(volume) => updateSegment(selectedSegment.id, { mainVolume: volume })}
+              fitMode={selectedSegment.mainFitMode ?? 'cover'}
+              onFitModeChange={(mode) => updateSegment(selectedSegment.id, { mainFitMode: mode })}
             />
-            {selectedSegment.layoutType !== 'single-main' && (
+
+            {/* Sub2 for split-3h (right) */}
+            {selectedSegment.layoutType === 'split-3h' && (
+              <SubClipList
+                subEntries={selectedSegment.subEntries.slice(1, 2)}
+                mainDuration={currentSegmentDuration}
+                clips={subLane.clips}
+                selectedEntryIndex={selectedSubEntryIndex === 1 ? 0 : null}
+                isLoading={isLoading === 'sub'}
+                label="右側（サブ2）"
+                maxEntries={1}
+                panelId="sub2"
+                onSelectEntry={(index) => {
+                  if (index !== null) {
+                    setSelectedMainEntryIndex(null)
+                    setSelectedSubEntryIndex(1)
+                    if (selectedSegment.subEntries[1]) {
+                      selectClip('sub', selectedSegment.subEntries[1].clipId)
+                    }
+                  } else {
+                    setSelectedSubEntryIndex(null)
+                    selectClip(null, null)
+                  }
+                }}
+                onAddEntry={() => handleAddClip('sub')}
+                onRemoveEntry={() => {
+                  removeSubEntry(selectedSegment.id, 1)
+                  if (selectedSubEntryIndex === 1) {
+                    setSelectedSubEntryIndex(null)
+                    selectClip(null, null)
+                  }
+                }}
+                onUpdateEntryDuration={(_, duration) => {
+                  updateSubEntry(selectedSegment.id, 1, { duration })
+                }}
+                onReorderEntries={() => {}}
+                onDragOver={(e) => handleDragOver(e, 'sub')}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, 'sub')}
+                isDragOver={dragOverLane === 'sub'}
+                onCrossDrop={handleCrossDrop('sub2')}
+                isEditing={selectedLaneId === 'sub' && selectedSubEntryIndex === 1 && selectedClip !== null}
+              />
+            )}
+
+            {/* Sub for non-split-3h layouts */}
+            {selectedSegment.layoutType !== 'single-main' && selectedSegment.layoutType !== 'split-3h' && (
               <SubClipList
                 subEntries={selectedSegment.subEntries}
                 mainDuration={currentSegmentDuration}
                 clips={subLane.clips}
                 selectedEntryIndex={selectedSubEntryIndex}
                 isLoading={isLoading === 'sub'}
+                panelId="sub"
                 onSelectEntry={(index) => {
+                  setSelectedMainEntryIndex(null)
                   setSelectedSubEntryIndex(index)
                   if (index !== null && selectedSegment.subEntries[index]) {
                     selectClip('sub', selectedSegment.subEntries[index].clipId)
@@ -710,30 +697,91 @@ export function SegmentPanel() {
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, 'sub')}
                 isDragOver={dragOverLane === 'sub'}
+                onCrossDrop={handleCrossDrop('sub')}
+                isEditing={selectedLaneId === 'sub' && selectedClip !== null}
+                volume={selectedSegment.subVolume ?? 1}
+                onVolumeChange={(volume) => updateSegment(selectedSegment.id, { subVolume: volume })}
+                fitMode={selectedSegment.subFitMode ?? 'cover'}
+                onFitModeChange={(mode) => updateSegment(selectedSegment.id, { subFitMode: mode })}
               />
             )}
           </div>
 
-          {/* Clip Editor (Trim/Crop) */}
-          {selectedClip && (
-            <div className="border-t border-editor-border pt-4">
-              <div className="flex border-b border-editor-border mb-4">
-                <button onClick={() => setEditMode('trim')}
-                  className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
-                    editMode === 'trim' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
-                  }`}>
-                  再生区間
-                </button>
-                <button onClick={() => setEditMode('crop')}
-                  className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
-                    editMode === 'crop' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
-                  }`}>
-                  表示範囲
-                </button>
-              </div>
-              {editMode === 'trim' ? renderTrimEditor() : renderCropEditor()}
+          {/* Clip Editor (Trim/Crop/Image) */}
+          <div className={`pt-4 ${
+            selectedClip
+              ? 'border-2 border-gray-400 rounded-b-lg p-3'
+              : 'border-t border-editor-border'
+          }`}>
+            <div className="flex border-b border-editor-border mb-4">
+              <button
+                onClick={() => setEditMode('trim')}
+                disabled={!selectedClip}
+                className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+                  editMode === 'trim' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed'
+                }`}
+              >
+                再生区間
+              </button>
+              <button
+                onClick={() => setEditMode('crop')}
+                disabled={!selectedClip}
+                className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+                  editMode === 'crop' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed'
+                }`}
+              >
+                表示範囲
+              </button>
+              <button
+                onClick={() => setEditMode('image')}
+                className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+                  editMode === 'image' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                画像
+              </button>
             </div>
-          )}
+
+            {editMode === 'trim' && selectedClip && selectedLaneId && (
+              <TrimEditor
+                clip={selectedClip}
+                laneId={selectedLaneId}
+                constraint={clipConstraint}
+                onUpdateClip={updateClip}
+              />
+            )}
+
+            {editMode === 'crop' && selectedClip && selectedLaneId && (
+              <CropEditor
+                clip={selectedClip}
+                laneId={selectedLaneId}
+                layoutType={clipLayoutType}
+                isVertical={isVertical}
+                onUpdateClip={updateClip}
+              />
+            )}
+
+            {editMode === 'image' && (
+              <div className={`grid gap-4 ${selectedSegment.layoutType === 'single-main' ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                <ImageOverlaySettings
+                  label="メイン画像"
+                  overlay={selectedSegment.mainImageOverlay}
+                  onUpdate={(overlay) => {
+                    updateSegment(selectedSegment.id, { mainImageOverlay: overlay })
+                  }}
+                />
+                {selectedSegment.layoutType !== 'single-main' && (
+                  <ImageOverlaySettings
+                    label="サブ画像"
+                    overlay={selectedSegment.subImageOverlay}
+                    onUpdate={(overlay) => {
+                      updateSegment(selectedSegment.id, { subImageOverlay: overlay })
+                    }}
+                  />
+                )}
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         <div

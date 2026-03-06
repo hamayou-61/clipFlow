@@ -1,17 +1,13 @@
 import React, { useCallback, useRef, DragEvent, useState, useEffect } from 'react'
 import { formatTime } from '../utils/format'
-import type { Clip, SubEntry, VideoFitMode } from '../types'
+import type { Clip, MainEntry, VideoFitMode } from '../types'
 import type { PanelId } from '../store/useEditorStore'
 
-interface SubClipListProps {
-  subEntries: SubEntry[]
-  mainDuration: number
+interface MainClipListProps {
+  mainEntries: MainEntry[]
   clips: Clip[]
   selectedEntryIndex: number | null
   isLoading: boolean
-  label?: string
-  maxEntries?: number
-  panelId?: PanelId
   onSelectEntry: (index: number | null) => void
   onAddEntry: () => void
   onRemoveEntry: (index: number) => void
@@ -21,6 +17,9 @@ interface SubClipListProps {
   onDragLeave: (e: DragEvent<HTMLDivElement>) => void
   onDrop: (e: DragEvent<HTMLDivElement>) => void
   isDragOver: boolean
+  label?: string
+  maxEntries?: number
+  panelId?: PanelId
   onCrossDrop?: (fromPanel: PanelId, entryIndex: number) => void
   isEditing?: boolean
   // Volume and fit mode controls
@@ -30,15 +29,11 @@ interface SubClipListProps {
   onFitModeChange?: (mode: VideoFitMode) => void
 }
 
-export function SubClipList({
-  subEntries,
-  mainDuration,
+export function MainClipList({
+  mainEntries,
   clips,
   selectedEntryIndex,
   isLoading,
-  label = 'サブ動画',
-  maxEntries = 10,
-  panelId = 'sub',
   onSelectEntry,
   onAddEntry,
   onRemoveEntry,
@@ -48,13 +43,16 @@ export function SubClipList({
   onDragLeave,
   onDrop,
   isDragOver,
+  label = 'メイン動画',
+  maxEntries = 10,
+  panelId = 'main',
   onCrossDrop,
   isEditing = false,
   volume,
   onVolumeChange,
   fitMode,
   onFitModeChange,
-}: SubClipListProps) {
+}: MainClipListProps) {
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
 
@@ -62,15 +60,14 @@ export function SubClipList({
   useEffect(() => {
     setDraggingIndex(null)
     setDragOverIndex(null)
-  }, [subEntries])
+  }, [mainEntries])
 
   const getClip = (clipId: string): Clip | null => {
     return clips.find(c => c.id === clipId) || null
   }
 
-  const totalSubDuration = subEntries.reduce((sum, e) => sum + e.duration, 0)
-  const isMatched = Math.abs(totalSubDuration - mainDuration) < 0.01
-  const canAddMore = subEntries.length < maxEntries
+  const totalDuration = mainEntries.reduce((sum, e) => sum + e.duration, 0)
+  const canAddMore = mainEntries.length < maxEntries
 
   // Duration bar drag handling
   const handleDurationDrag = useCallback((
@@ -82,7 +79,7 @@ export function SubClipList({
     e.preventDefault()
     e.stopPropagation()
 
-    const entry = subEntries[index]
+    const entry = mainEntries[index]
     const clip = getClip(entry.clipId)
     if (!clip) return
 
@@ -96,8 +93,7 @@ export function SubClipList({
       const ratio = deltaX / rect.width
       const deltaDuration = ratio * maxDuration * 0.5 // Scale factor for sensitivity
 
-      // Cap at clip duration (100%) and allow minimum of 0
-      const newDuration = Math.max(0, Math.min(maxDuration, startDuration + deltaDuration))
+      const newDuration = Math.max(0.1, Math.min(maxDuration, startDuration + deltaDuration))
       onUpdateEntryDuration(index, newDuration)
     }
 
@@ -108,7 +104,7 @@ export function SubClipList({
 
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-  }, [subEntries, clips, onUpdateEntryDuration])
+  }, [mainEntries, clips, onUpdateEntryDuration])
 
   // Reorder drag handling
   const handleReorderDragStart = (e: React.DragEvent, index: number) => {
@@ -124,12 +120,10 @@ export function SubClipList({
 
   const handleReorderDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault()
-    // Only handle internal reorder (when dragging from inside)
     if (draggingIndex !== null && draggingIndex !== index) {
       e.stopPropagation()
       setDragOverIndex(index)
     }
-    // For external file drops, let event bubble to parent
   }
 
   const handleReorderDragLeave = () => {
@@ -139,10 +133,8 @@ export function SubClipList({
   const handleReorderDrop = (e: React.DragEvent, toIndex: number) => {
     e.preventDefault()
 
-    // Check if this is a file drop (external) vs internal reorder
     const files = Array.from(e.dataTransfer.files)
     if (files.length > 0) {
-      // File drop - let parent handle it (don't stop propagation)
       setDraggingIndex(null)
       setDragOverIndex(null)
       return
@@ -165,7 +157,6 @@ export function SubClipList({
       }
     }
 
-    // Internal reorder
     e.stopPropagation()
     const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10)
     if (!isNaN(fromIndex) && fromIndex !== toIndex) {
@@ -222,10 +213,8 @@ export function SubClipList({
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-500">{label}</span>
-          {subEntries.length > 0 && (
-            <span className={`text-xs font-mono ${isMatched ? 'text-green-400' : 'text-yellow-400'}`}>
-              {formatTime(totalSubDuration)}{!isMatched && ' !'}
-            </span>
+          {mainEntries.length > 0 && (
+            <span className="text-xs text-gray-400 font-mono">{formatTime(totalDuration)}</span>
           )}
         </div>
         <div className="flex items-center gap-3">
@@ -268,10 +257,10 @@ export function SubClipList({
         </div>
       </div>
 
-      {/* Sub entries list */}
-      {subEntries.length > 0 ? (
+      {/* Main entries list */}
+      {mainEntries.length > 0 ? (
         <div className="space-y-2 mb-3">
-          {subEntries.map((entry, index) => {
+          {mainEntries.map((entry, index) => {
             const clip = getClip(entry.clipId)
             if (!clip) return null
 
@@ -323,8 +312,6 @@ export function SubClipList({
                     <p className="text-xs text-white truncate">{clip.fileName}</p>
                     {/* Duration bar */}
                     <DurationBar
-                      duration={entry.duration}
-                      maxDuration={mainDuration}
                       percent={durationPercent}
                       onDrag={(e, ref) => handleDurationDrag(e, index, ref)}
                     />
@@ -376,8 +363,8 @@ export function SubClipList({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
               </svg>
               <span className="text-xs">
-                {subEntries.length === 0 ? `${label}を追加` : '+ 追加'}
-                {subEntries.length > 0 && maxEntries > 1 && ` (${subEntries.length}/${maxEntries})`}
+                {mainEntries.length === 0 ? `${label}を追加` : '+ 追加'}
+                {mainEntries.length > 0 && maxEntries > 1 && ` (${mainEntries.length}/${maxEntries})`}
               </span>
             </>
           )}
@@ -398,8 +385,6 @@ export function SubClipList({
 
 // Duration bar sub-component
 interface DurationBarProps {
-  duration: number
-  maxDuration: number
   percent: number
   onDrag: (e: React.MouseEvent, ref: HTMLDivElement | null) => void
 }
@@ -414,7 +399,7 @@ function DurationBar({ percent, onDrag }: DurationBarProps) {
       onMouseDown={(e) => onDrag(e, barRef.current)}
     >
       <div
-        className="h-full bg-editor-accent rounded-full transition-all"
+        className="h-full bg-blue-500 rounded-full transition-all"
         style={{ width: `${Math.min(100, percent)}%` }}
       />
       {/* Drag indicator */}

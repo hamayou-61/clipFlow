@@ -1,10 +1,18 @@
 import { useCallback, useState } from 'react'
 import { useEditorStore } from '../store/useEditorStore'
+import { VolumeControls } from './VolumeControls'
 import type { AspectRatio } from '../types'
 
 export function Header() {
   const aspectRatio = useEditorStore((state) => state.aspectRatio)
   const setAspectRatio = useEditorStore((state) => state.setAspectRatio)
+  const segments = useEditorStore((state) => state.segments)
+  const mainVolume = useEditorStore((state) => state.mainVolume)
+  const subVolume = useEditorStore((state) => state.subVolume)
+  const audioBalance = useEditorStore((state) => state.audioBalance)
+  const setMainVolume = useEditorStore((state) => state.setMainVolume)
+  const setSubVolume = useEditorStore((state) => state.setSubVolume)
+  const setAudioBalance = useEditorStore((state) => state.setAudioBalance)
   const bgmFileName = useEditorStore((state) => state.bgmFileName)
   const bgmVolume = useEditorStore((state) => state.bgmVolume)
   const bgmFadeIn = useEditorStore((state) => state.bgmFadeIn)
@@ -16,6 +24,8 @@ export function Header() {
 
   const [isBgmLoading, setIsBgmLoading] = useState(false)
   const [showBgmDetail, setShowBgmDetail] = useState(false)
+
+  const hasSegments = segments.length > 0
 
   const aspectOptions: { value: AspectRatio; label: string }[] = [
     { value: '16:9', label: '16:9 (横長)' },
@@ -59,8 +69,21 @@ export function Header() {
         </select>
       </div>
 
-      {/* BGM */}
-      <div className="relative flex items-center gap-3 text-xs">
+      <div className="flex items-center gap-6">
+        {/* Volume Controls */}
+        {hasSegments && (
+          <VolumeControls
+            mainVolume={mainVolume}
+            subVolume={subVolume}
+            audioBalance={audioBalance}
+            onMainVolumeChange={setMainVolume}
+            onSubVolumeChange={setSubVolume}
+            onAudioBalanceChange={setAudioBalance}
+          />
+        )}
+
+        {/* BGM */}
+        <div className="relative flex items-center gap-3 text-xs">
         <span className="text-gray-400 font-medium flex-shrink-0">BGM</span>
         {bgmFileName ? (
           <>
@@ -153,6 +176,7 @@ export function Header() {
             {isBgmLoading ? '読込中...' : 'ファイルを選択'}
           </button>
         )}
+        </div>
       </div>
     </header>
   )

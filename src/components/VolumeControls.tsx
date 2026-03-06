@@ -20,10 +20,10 @@ export function VolumeControls({
   const [showControls, setShowControls] = useState(false)
 
   return (
-    <div className="mt-2 max-w-3xl mx-auto flex flex-col items-end">
+    <div className="relative flex items-center gap-3 text-xs">
       <button
         onClick={() => setShowControls(!showControls)}
-        className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+        className="flex items-center gap-1 text-gray-500 hover:text-gray-300 transition-colors"
       >
         <svg
           className={`w-3 h-3 transition-transform ${showControls ? 'rotate-90' : ''}`}
@@ -32,20 +32,18 @@ export function VolumeControls({
         >
           <path d="M8 5v14l11-7z" />
         </svg>
-        <span>動画音量設定</span>
-        {!showControls && (
-          <span className="text-gray-600 ml-2">
-            (メイン {Math.round(mainVolume * 100)}% / サブ {Math.round(subVolume * 100)}%)
-          </span>
-        )}
+        <span className="font-medium">動画音量</span>
+        <span className="text-gray-600">
+          (メイン {Math.round(mainVolume * 100)}% / サブ {Math.round(subVolume * 100)}%)
+        </span>
       </button>
 
       {showControls && (
-        <div className="mt-3 p-3 bg-editor-bg rounded-lg border border-editor-border w-full">
-          <div className="flex items-center gap-6 text-xs">
+        <div className="absolute top-full left-0 mt-2 p-3 bg-editor-bg rounded-lg border border-editor-border shadow-lg z-50 w-[500px]">
+          <div className="flex items-center gap-4 text-xs">
             {/* Main Volume */}
             <div className="flex items-center gap-2 flex-1">
-              <span className="text-gray-500 w-12">メイン</span>
+              <span className="text-gray-500 flex-shrink-0">メイン</span>
               <input
                 type="range"
                 min={0}
@@ -71,7 +69,7 @@ export function VolumeControls({
                 step={1}
                 value={audioBalance}
                 onChange={(e) => onAudioBalanceChange(parseInt(e.target.value))}
-                className="w-20 h-1.5 rounded-lg cursor-pointer"
+                className="w-16 h-1.5 rounded-lg cursor-pointer"
                 style={{
                   background: `linear-gradient(to right, #3b82f6 ${audioBalance}%, #3a3a3a ${audioBalance}%)`
                 }}
@@ -81,7 +79,7 @@ export function VolumeControls({
 
             {/* Sub Volume */}
             <div className="flex items-center gap-2 flex-1">
-              <span className="text-gray-500 w-12">サブ</span>
+              <span className="text-gray-500 flex-shrink-0">サブ</span>
               <input
                 type="range"
                 min={0}

@@ -32,6 +32,7 @@ export async function loadVideoFile(filePath: string): Promise<Clip | null> {
       cropX: 0,
       cropY: 0,
       cropScale: 1,
+      pitchShift: 0,
     }
   } catch (error) {
     console.error('Failed to load video:', error)

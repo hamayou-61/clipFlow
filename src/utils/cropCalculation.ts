@@ -1,4 +1,4 @@
-import type { Clip, LayoutType } from '../types'
+import type { Clip, LayoutType, VideoFitMode } from '../types'
 
 /**
  * Calculate target aspect ratio based on layout type and output orientation
@@ -11,6 +11,11 @@ export function getTargetAspect(layoutType: LayoutType, isHorizontalOutput: bool
     return isHorizontalOutput ? 16 / 9 : 9 / 16
   } else if (layoutType === 'split-h') {
     return isHorizontalOutput ? 8 / 9 : 9 / 32
+  } else if (layoutType === 'split-3h') {
+    // 3-way horizontal split: each panel is 1/3 width, full height
+    // 16:9 output -> panel is (1920/3) x 1080 = 640x1080 -> aspect = 16/27
+    // 9:16 output -> panel is (1080/3) x 1920 = 360x1920 -> aspect = 3/16
+    return isHorizontalOutput ? 16 / 27 : 3 / 16
   } else { // split-v
     return isHorizontalOutput ? 32 / 9 : 9 / 8
   }
@@ -19,50 +24,65 @@ export function getTargetAspect(layoutType: LayoutType, isHorizontalOutput: bool
 /**
  * Calculate video style for proper crop display in preview
  * Returns CSS properties for positioning the video correctly within its container
- * Uses "contain" behavior at cropScale=1 (entire video visible), zoom crops at cropScale>1
  *
  * @param clip - The clip to calculate styles for
  * @param layoutType - The layout type of the segment
  * @param isHorizontalOutput - Whether the output is horizontal (16:9) or vertical (9:16)
+ * @param fitMode - 'cover' (fill and crop) or 'contain' (fit with letterbox)
  * @returns React CSSProperties for the video element
  */
-export function getVideoStyle(clip: Clip, layoutType: LayoutType, isHorizontalOutput: boolean): React.CSSProperties {
-  const targetAspect = getTargetAspect(layoutType, isHorizontalOutput)
-  const sourceAspect = clip.width / clip.height
-  const cropScale = clip.cropScale ?? 1
-
-  // Calculate video dimensions using "contain" logic at base scale
-  // At cropScale=1, the entire video fits within the frame (may have letterbox/pillarbox)
-  // At cropScale>1, video is zoomed and may overflow the frame
-  let videoWidth: number // as percentage of container
-  let videoHeight: number // as percentage of container
-
-  if (sourceAspect > targetAspect) {
-    // Video is wider than target - fit width to container, height is smaller (letterbox)
-    videoWidth = cropScale * 100
-    videoHeight = cropScale * (targetAspect / sourceAspect) * 100
-  } else {
-    // Video is taller than target - fit height to container, width is smaller (pillarbox)
-    videoHeight = cropScale * 100
-    videoWidth = cropScale * (sourceAspect / targetAspect) * 100
+export function getVideoStyle(
+  clip: Clip,
+  _layoutType: LayoutType,
+  _isHorizontalOutput: boolean,
+  fitMode: VideoFitMode = 'cover'
+): React.CSSProperties {
+  // For 'contain' mode, simply use object-fit: contain
+  if (fitMode === 'contain') {
+    return {
+      position: 'absolute',
+      top: '0',
+      left: '0',
+      width: '100%',
+      height: '100%',
+      objectFit: 'contain' as const,
+    }
   }
 
-  // Calculate max offset - only possible when video exceeds container (cropScale > 1 or partial overflow)
-  const maxOffsetX = Math.max(0, (videoWidth - 100) / 200) // as fraction of container
-  const maxOffsetY = Math.max(0, (videoHeight - 100) / 200) // as fraction of container
+  // 'cover' mode - use object-fit: cover with object-position for crop adjustment
+  const cropScale = clip.cropScale ?? 1
 
-  // Convert crop position (-1 to 1) to actual offset percentage
-  const offsetX = -clip.cropX * maxOffsetX * 100
-  const offsetY = -clip.cropY * maxOffsetY * 100
+  // Convert crop position (-1 to 1) to object-position percentage (0% to 100%)
+  // cropX/cropY: -1 = left/top, 0 = center, 1 = right/bottom
+  const posX = 50 + (clip.cropX * 50)  // -1 -> 0%, 0 -> 50%, 1 -> 100%
+  const posY = 50 + (clip.cropY * 50)
+
+  // If cropScale is 1, use simple object-fit: cover
+  if (cropScale === 1) {
+    return {
+      position: 'absolute',
+      top: '0',
+      left: '0',
+      width: '100%',
+      height: '100%',
+      objectFit: 'cover' as const,
+      objectPosition: `${posX}% ${posY}%`,
+    }
+  }
+
+  // With cropScale != 1, we need to scale the video larger/smaller
+  // Scale from center, then apply crop position offset
+  const scale = cropScale * 100
 
   return {
     position: 'absolute',
     top: '50%',
     left: '50%',
-    width: `${videoWidth}%`,
-    height: `${videoHeight}%`,
-    transform: `translate(calc(-50% + ${offsetX}%), calc(-50% + ${offsetY}%))`,
-    objectFit: 'fill' as const,
+    width: `${scale}%`,
+    height: `${scale}%`,
+    transform: `translate(-50%, -50%)`,
+    objectFit: 'cover' as const,
+    objectPosition: `${posX}% ${posY}%`,
   }
 }
 

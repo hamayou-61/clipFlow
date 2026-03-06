@@ -67,6 +67,40 @@ app.whenReady().then(() => {
   // Create application menu
   const template: Electron.MenuItemConstructorOptions[] = [
     {
+      label: 'ファイル',
+      submenu: [
+        {
+          label: '新規プロジェクト',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => {
+            mainWindow?.webContents.send('menu:newProject')
+          },
+        },
+        {
+          label: 'プロジェクトを開く',
+          accelerator: 'CmdOrCtrl+O',
+          click: () => {
+            mainWindow?.webContents.send('menu:openProject')
+          },
+        },
+        {
+          label: 'プロジェクトを保存',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            mainWindow?.webContents.send('menu:saveProject')
+          },
+        },
+        { type: 'separator' },
+        {
+          label: '終了',
+          accelerator: 'Alt+F4',
+          click: () => {
+            app.quit()
+          },
+        },
+      ],
+    },
+    {
       label: '編集',
       submenu: [
         {
@@ -114,7 +148,17 @@ app.whenReady().then(() => {
 
     // Determine content type based on file extension
     const ext = path.extname(filePath).toLowerCase()
-    const contentType = ext === '.mov' ? 'video/quicktime' : 'video/mp4'
+    const contentTypes: Record<string, string> = {
+      '.mov': 'video/quicktime',
+      '.mp4': 'video/mp4',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.bmp': 'image/bmp',
+    }
+    const contentType = contentTypes[ext] || 'application/octet-stream'
 
     try {
       const stat = fs.statSync(filePath)
@@ -232,12 +276,12 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('dialog:openFile', async () => {
   const result = await dialog.showOpenDialog(mainWindow!, {
-    properties: ['openFile'],
+    properties: ['openFile', 'multiSelections'],
     filters: [
       { name: 'Videos', extensions: ['mp4', 'mov'] }
     ]
   })
-  return result.filePaths[0] || null
+  return result.filePaths // Return array of file paths
 })
 
 ipcMain.handle('dialog:openAudioFile', async () => {
@@ -245,6 +289,16 @@ ipcMain.handle('dialog:openAudioFile', async () => {
     properties: ['openFile'],
     filters: [
       { name: 'Audio/Video Files', extensions: ['mp3', 'wav', 'aac', 'flac', 'm4a', 'ogg', 'mp4', 'mov'] }
+    ]
+  })
+  return result.filePaths[0] || null
+})
+
+ipcMain.handle('dialog:openImage', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }
     ]
   })
   return result.filePaths[0] || null
@@ -282,9 +336,17 @@ function formatDateTime(): string {
 
 // Video IPC Handlers
 
-type LayoutType = 'split-h' | 'split-v' | 'single-main' | 'single-sub' | 'pip'
+type LayoutType = 'split-h' | 'split-v' | 'split-3h' | 'single-main' | 'single-sub' | 'pip'
 type PipPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
 type PipSize = '1/4' | '1/3' | '1/5'
+type PipOrientation = 'horizontal' | 'vertical'
+type VideoFitMode = 'cover' | 'contain'
+interface ImageOverlay {
+  filePath: string
+  x: number         // Position X: -1.0 (left) to 0 (center) to 1.0 (right)
+  y: number         // Position Y: -1.0 (top) to 0 (center) to 1.0 (bottom)
+  size: number      // Ratio to output width (0.05 ~ 2.0)
+}
 
 interface ClipInfo {
   filePath: string
@@ -295,22 +357,29 @@ interface ClipInfo {
   cropScale: number
   width: number
   height: number
+  pitchShift: number
 }
 
-interface SubEntryExport {
+interface EntryExport {
   clip: ClipInfo
-  inPoint: number    // Start point within the sub clip
-  duration: number   // Duration to use from this sub clip
+  inPoint: number    // Start point within the clip
+  duration: number   // Duration to use from this clip
 }
 
 interface SegmentExport {
   layoutType: LayoutType
   duration: number
-  mainClip: ClipInfo | null
-  subEntries: SubEntryExport[]  // Sub clips array for export
-  mainInPoint: number
+  mainEntries: EntryExport[]  // Main clips array for export
+  subEntries: EntryExport[]   // Sub clips array for export
   pipPosition?: PipPosition
   pipSize?: PipSize
+  pipOrientation?: PipOrientation
+  mainImageOverlay?: ImageOverlay
+  subImageOverlay?: ImageOverlay
+  mainVolume?: number  // Per-segment main volume (0.0 ~ 2.0, default 1.0)
+  subVolume?: number   // Per-segment sub volume (0.0 ~ 2.0, default 1.0)
+  mainFitMode?: VideoFitMode  // 'cover' = fill and crop, 'contain' = fit with letterbox
+  subFitMode?: VideoFitMode
 }
 
 interface BgmConfig {
@@ -445,22 +514,66 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
   // Collect all unique input files (BGM is handled separately)
   const inputFiles: string[] = []
   const fileToInputIndex = new Map<string, number>()
+  const imageInputIndices = new Set<number>() // Track which inputs are images
 
-  const getInputIndex = (filePath: string): number => {
+  const getInputIndex = (filePath: string, isImage = false): number => {
     if (!fileToInputIndex.has(filePath)) {
-      fileToInputIndex.set(filePath, inputFiles.length)
+      const idx = inputFiles.length
+      fileToInputIndex.set(filePath, idx)
       inputFiles.push(filePath)
+      if (isImage) {
+        imageInputIndices.add(idx)
+      }
     }
     return fileToInputIndex.get(filePath)!
   }
 
-  // Pre-process segments to get input indices
+  // Track how many times each input stream is referenced (for split filter)
+  // Key: "inputIdx:v" or "inputIdx:a", Value: count
+  const streamRefCount = new Map<string, number>()
+  const streamRefUsed = new Map<string, number>() // Track current usage index
+
+  const countStreamRef = (inputIdx: number, streamType: 'v' | 'a') => {
+    const key = `${inputIdx}:${streamType}`
+    streamRefCount.set(key, (streamRefCount.get(key) || 0) + 1)
+  }
+
+  const getStreamLabel = (inputIdx: number, streamType: 'v' | 'a'): string => {
+    const key = `${inputIdx}:${streamType}`
+    const totalRefs = streamRefCount.get(key) || 1
+    if (totalRefs <= 1) {
+      // Only one reference, use original stream directly
+      return `${inputIdx}:${streamType}`
+    }
+    // Multiple references, use split label
+    const usedIdx = streamRefUsed.get(key) || 0
+    streamRefUsed.set(key, usedIdx + 1)
+    return `in${inputIdx}${streamType}${usedIdx}`
+  }
+
+  // Pre-process segments to get input indices and count stream references
   segments.forEach((seg) => {
-    if (seg.mainClip) getInputIndex(seg.mainClip.filePath)
+    // Add all main entries
+    seg.mainEntries.forEach((entry) => {
+      const idx = getInputIndex(entry.clip.filePath)
+      countStreamRef(idx, 'v')
+      countStreamRef(idx, 'a')
+    })
     // Add all sub entries
     seg.subEntries.forEach((entry) => {
-      getInputIndex(entry.clip.filePath)
+      const idx = getInputIndex(entry.clip.filePath)
+      countStreamRef(idx, 'v')
+      countStreamRef(idx, 'a')
     })
+    // Add image overlay files (mark as image)
+    if (seg.mainImageOverlay) {
+      const idx = getInputIndex(seg.mainImageOverlay.filePath, true)
+      countStreamRef(idx, 'v')
+    }
+    if (seg.subImageOverlay) {
+      const idx = getInputIndex(seg.subImageOverlay.filePath, true)
+      countStreamRef(idx, 'v')
+    }
   })
 
   // BGM input index (added last, with stream_loop option)
@@ -498,15 +611,42 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
     const segmentVideoLabels: string[] = []
     const segmentAudioLabels: string[] = []
 
+    // Generate split/asplit filters for streams that are referenced multiple times
+    for (const [key, count] of streamRefCount.entries()) {
+      if (count > 1) {
+        const [inputIdxStr, streamType] = key.split(':')
+        const inputIdx = parseInt(inputIdxStr, 10)
+        const labels = Array.from({ length: count }, (_, i) => `[in${inputIdx}${streamType}${i}]`).join('')
+
+        if (streamType === 'v') {
+          videoFilters.push(`[${inputIdx}:v]split=${count}${labels}`)
+        } else {
+          // Only add asplit if the file has audio
+          const filePath = inputFiles[inputIdx]
+          if (fileHasAudio.get(filePath)) {
+            audioFilters.push(`[${inputIdx}:a]asplit=${count}${labels}`)
+          }
+        }
+      }
+    }
+
     // audioBalance: 0 = main only, 50 = equal, 100 = sub only
     const mainBalanceRatio = (100 - audioBalance) / 100
     const subBalanceRatio = audioBalance / 100
-    const mainFinalVol = mainBalanceRatio * mainVolume
-    const subFinalVol = subBalanceRatio * subVolume
 
     // Process each segment
     segments.forEach((seg, segIdx) => {
-      const { layoutType, duration, mainClip, subEntries, mainInPoint } = seg
+      const { layoutType, duration, mainEntries, subEntries } = seg
+
+      // Per-segment volumes (fallback to global if not set)
+      const segMainVolume = seg.mainVolume ?? mainVolume
+      const segSubVolume = seg.subVolume ?? subVolume
+      const segMainFinalVol = mainBalanceRatio * segMainVolume
+      const segSubFinalVol = subBalanceRatio * segSubVolume
+
+      // Video fit modes
+      const mainFitMode: VideoFitMode = seg.mainFitMode ?? 'cover'
+      const subFitMode: VideoFitMode = seg.subFitMode ?? 'cover'
 
       // Calculate target dimensions based on layout
       let mainTargetWidth: number, mainTargetHeight: number
@@ -518,6 +658,12 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         mainTargetHeight = outputHeight
         subTargetWidth = outputWidth / 2
         subTargetHeight = outputHeight
+      } else if (layoutType === 'split-3h') {
+        // 3-way horizontal split: Sub1 | Main | Sub2
+        mainTargetWidth = Math.round(outputWidth / 3)
+        mainTargetHeight = outputHeight
+        subTargetWidth = Math.round(outputWidth / 3)
+        subTargetHeight = outputHeight
       } else if (layoutType === 'split-v') {
         // Vertical split: stacked
         mainTargetWidth = outputWidth
@@ -528,11 +674,20 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         // Picture-in-Picture: main fullscreen, sub small in corner
         mainTargetWidth = outputWidth
         mainTargetHeight = outputHeight
-        // Calculate PiP size based on pipSize setting
+        // Calculate PiP size based on pipSize and orientation settings
         const pipSize = seg.pipSize || '1/4'
+        const pipOrientation = seg.pipOrientation || 'horizontal'
         const pipSizeRatio = pipSize === '1/3' ? 3 : pipSize === '1/5' ? 5 : 4
-        subTargetWidth = Math.round(outputWidth / pipSizeRatio)
-        subTargetHeight = Math.round(outputHeight / pipSizeRatio)
+
+        if (pipOrientation === 'vertical') {
+          // Vertical (portrait) PiP: 9:16 aspect ratio
+          subTargetHeight = Math.round(outputHeight / pipSizeRatio * 1.2)
+          subTargetWidth = Math.round(subTargetHeight * 9 / 16)
+        } else {
+          // Horizontal (landscape) PiP: standard square-ish scaling
+          subTargetWidth = Math.round(outputWidth / pipSizeRatio)
+          subTargetHeight = Math.round(outputHeight / pipSizeRatio)
+        }
       } else {
         // Single mode: full frame
         mainTargetWidth = outputWidth
@@ -542,35 +697,49 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
       }
 
       // Build clip filter for a specific duration (not segment duration)
+      // fitMode: 'cover' = fill and crop, 'contain' = fit with letterbox
       const buildClipFilterWithDuration = (
         clip: ClipInfo,
         inPointOffset: number,
         clipDuration: number,
         targetWidth: number,
         targetHeight: number,
-        label: string
+        label: string,
+        fitMode: VideoFitMode = 'cover'
       ): string => {
         const inputIdx = getInputIndex(clip.filePath)
+        const streamLabel = getStreamLabel(inputIdx, 'v')
         const cropScale = clip.cropScale || 1
         const startTime = clip.inPoint + inPointOffset
         const endTime = startTime + clipDuration
 
-        const scaledWidth = Math.round(targetWidth * cropScale)
-        const scaledHeight = Math.round(targetHeight * cropScale)
+        let filterChain = `[${streamLabel}]trim=start=${startTime}:end=${endTime},setpts=PTS-STARTPTS`
 
-        const sourceAspect = clip.width / clip.height
-        const targetAspect = targetWidth / targetHeight
-        const scaleMode = sourceAspect < targetAspect ? 'decrease' : 'increase'
+        if (fitMode === 'contain') {
+          // Contain mode: fit entire video within the target area with black bars
+          // Use 'decrease' to ensure video fits within bounds, then pad to fill
+          filterChain += `,scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease`
+          filterChain += `,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black`
+        } else {
+          // Cover mode: fill the target area, crop excess
+          const scaledWidth = Math.round(targetWidth * cropScale)
+          const scaledHeight = Math.round(targetHeight * cropScale)
 
-        const cropX = `(iw-${targetWidth})/2*(1+${clip.cropX})`
-        const cropY = `(ih-${targetHeight})/2*(1+${clip.cropY})`
-        const padX = `(${targetWidth}-iw)/2*(1-${clip.cropX})`
-        const padY = `(${targetHeight}-ih)/2*(1-${clip.cropY})`
+          const sourceAspect = clip.width / clip.height
+          const targetAspect = targetWidth / targetHeight
+          // Use 'increase' to ensure video fills the area, may overflow
+          const scaleMode = sourceAspect < targetAspect ? 'decrease' : 'increase'
 
-        let filterChain = `[${inputIdx}:v]trim=start=${startTime}:end=${endTime},setpts=PTS-STARTPTS`
-        filterChain += `,scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=${scaleMode}`
-        filterChain += `,crop='min(iw\\,${targetWidth})':'min(ih\\,${targetHeight})':${cropX}:${cropY}`
-        filterChain += `,pad=${targetWidth}:${targetHeight}:${padX}:${padY}:black`
+          const cropX = `(iw-${targetWidth})/2*(1+${clip.cropX})`
+          const cropY = `(ih-${targetHeight})/2*(1+${clip.cropY})`
+          const padX = `(${targetWidth}-iw)/2*(1-${clip.cropX})`
+          const padY = `(${targetHeight}-ih)/2*(1-${clip.cropY})`
+
+          filterChain += `,scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=${scaleMode}`
+          filterChain += `,crop='min(iw\\,${targetWidth})':'min(ih\\,${targetHeight})':${cropX}:${cropY}`
+          filterChain += `,pad=${targetWidth}:${targetHeight}:${padX}:${padY}:black`
+        }
+
         filterChain += `,setsar=1[${label}]`
 
         return filterChain
@@ -581,9 +750,10 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         inPointOffset: number,
         targetWidth: number,
         targetHeight: number,
-        label: string
+        label: string,
+        fitMode: VideoFitMode = 'cover'
       ): string => {
-        return buildClipFilterWithDuration(clip, inPointOffset, duration, targetWidth, targetHeight, label)
+        return buildClipFilterWithDuration(clip, inPointOffset, duration, targetWidth, targetHeight, label, fitMode)
       }
 
       const buildAudioFilterWithDuration = (
@@ -593,11 +763,24 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         label: string
       ): string => {
         const inputIdx = getInputIndex(clip.filePath)
+        const streamLabel = getStreamLabel(inputIdx, 'a')
         const startTime = clip.inPoint + inPointOffset
         const endTime = startTime + clipDuration
 
         if (fileHasAudio.get(clip.filePath)) {
-          return `[${inputIdx}:a]atrim=start=${startTime}:end=${endTime},asetpts=PTS-STARTPTS[${label}]`
+          let filterChain = `[${streamLabel}]atrim=start=${startTime}:end=${endTime},asetpts=PTS-STARTPTS`
+
+          // Apply pitch shift if needed (pitchShift is in semitones: 0, -5, -10)
+          const pitchShift = clip.pitchShift ?? 0
+          if (pitchShift !== 0) {
+            // pitch_ratio = 2^(semitones/12)
+            const pitchRatio = Math.pow(2, pitchShift / 12)
+            // asetrate changes both pitch and speed, atempo corrects speed back
+            filterChain += `,asetrate=48000*${pitchRatio.toFixed(6)},aresample=48000,atempo=${(1 / pitchRatio).toFixed(6)}`
+          }
+
+          filterChain += `[${label}]`
+          return filterChain
         } else {
           // No audio stream - generate silence
           return `anullsrc=r=48000:cl=stereo,atrim=0:${clipDuration}[${label}]`
@@ -615,14 +798,73 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
       const segVideoLabel = `segv${segIdx}`
       const segAudioLabel = `sega${segIdx}`
 
+      // Helper function to apply image overlay to a video stream
+      // inputLabel should NOT include brackets, outputLabel should NOT include brackets
+      const applyImageOverlay = (
+        overlay: ImageOverlay,
+        inputLabel: string,
+        outputLabel: string,
+        labelPrefix: string,
+        targetWidth: number,
+        targetHeight: number
+      ) => {
+        const overlayInputIdx = getInputIndex(overlay.filePath)
+        const overlayStreamLabel = getStreamLabel(overlayInputIdx, 'v')
+        const overlayScaledLabel = `${labelPrefix}_scaled`
+
+        // Calculate overlay dimensions based on target video size
+        const overlayWidth = Math.round(targetWidth * overlay.size)
+
+        // Scale the overlay image
+        const overlayFilter = `[${overlayStreamLabel}]trim=0:${duration},setpts=PTS-STARTPTS,scale=${overlayWidth}:-1,format=rgba[${overlayScaledLabel}]`
+        videoFilters.push(overlayFilter)
+
+        // Calculate overlay position using x/y coordinates
+        const overlayX = `(W-w)/2*(1+${overlay.x})`
+        const overlayY = `(H-h)/2*(1+${overlay.y})`
+
+        // Apply overlay
+        videoFilters.push(`[${inputLabel}][${overlayScaledLabel}]overlay=${overlayX}:${overlayY}[${outputLabel}]`)
+      }
+
       if (layoutType === 'single-main') {
-        // Single main clip
-        if (mainClip) {
-          videoFilters.push(buildClipFilter(mainClip, mainInPoint, outputWidth, outputHeight, segVideoLabel))
-          videoFilters.push(buildAudioFilter(mainClip, mainInPoint, `${segAudioLabel}_main`))
-          audioFilters.push(`[${segAudioLabel}_main]volume=${mainVolume}[${segAudioLabel}]`)
+        // Single main mode (can have multiple main entries concatenated)
+        if (mainEntries.length > 0) {
+          const mainBaseLabel = seg.mainImageOverlay ? `seg${segIdx}_main_base` : segVideoLabel
+
+          if (mainEntries.length === 1) {
+            // Single main entry - no concatenation needed
+            const entry = mainEntries[0]
+            videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, outputWidth, outputHeight, mainBaseLabel, mainFitMode))
+            audioFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, `${segAudioLabel}_main`))
+          } else {
+            // Multiple main entries - need to concatenate
+            const mainVideoLabels: string[] = []
+            const mainAudioLabels: string[] = []
+
+            mainEntries.forEach((entry, entryIdx) => {
+              const entryVideoLabel = `seg${segIdx}_main${entryIdx}`
+              const entryAudioLabel = `seg${segIdx}_main${entryIdx}_a`
+
+              videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, outputWidth, outputHeight, entryVideoLabel, mainFitMode))
+              audioFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, entryAudioLabel))
+
+              mainVideoLabels.push(`[${entryVideoLabel}]`)
+              mainAudioLabels.push(`[${entryAudioLabel}]`)
+            })
+
+            // Concatenate all main entries into one stream
+            videoFilters.push(`${mainVideoLabels.join('')}concat=n=${mainEntries.length}:v=1:a=0[${mainBaseLabel}]`)
+            audioFilters.push(`${mainAudioLabels.join('')}concat=n=${mainEntries.length}:v=0:a=1[${segAudioLabel}_main]`)
+          }
+
+          audioFilters.push(`[${segAudioLabel}_main]volume=${segMainVolume}[${segAudioLabel}]`)
+
+          // Apply main image overlay if exists
+          if (seg.mainImageOverlay) {
+            applyImageOverlay(seg.mainImageOverlay, mainBaseLabel, segVideoLabel, `seg${segIdx}_main_img`, outputWidth, outputHeight)
+          }
         } else {
-          // Black frame with silence if no clip
           videoFilters.push(`color=c=black:s=${outputWidth}x${outputHeight}:d=${duration}[${segVideoLabel}]`)
           audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${segAudioLabel}]`)
         }
@@ -630,33 +872,128 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         // Single sub clip (use first sub entry if available)
         const firstEntry = subEntries[0]
         if (firstEntry) {
-          videoFilters.push(buildClipFilter(firstEntry.clip, firstEntry.inPoint, outputWidth, outputHeight, segVideoLabel))
-          videoFilters.push(buildAudioFilter(firstEntry.clip, firstEntry.inPoint, `${segAudioLabel}_sub`))
-          audioFilters.push(`[${segAudioLabel}_sub]volume=${subVolume}[${segAudioLabel}]`)
+          const subBaseLabel = seg.subImageOverlay ? `seg${segIdx}_sub_base` : segVideoLabel
+          videoFilters.push(buildClipFilter(firstEntry.clip, firstEntry.inPoint, outputWidth, outputHeight, subBaseLabel, subFitMode))
+          audioFilters.push(buildAudioFilter(firstEntry.clip, firstEntry.inPoint, `${segAudioLabel}_sub`))
+          audioFilters.push(`[${segAudioLabel}_sub]volume=${segSubVolume}[${segAudioLabel}]`)
+
+          // Apply sub image overlay if exists
+          if (seg.subImageOverlay) {
+            applyImageOverlay(seg.subImageOverlay, subBaseLabel, segVideoLabel, `seg${segIdx}_sub_img`, outputWidth, outputHeight)
+          }
         } else {
           videoFilters.push(`color=c=black:s=${outputWidth}x${outputHeight}:d=${duration}[${segVideoLabel}]`)
           audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${segAudioLabel}]`)
         }
-      } else {
-        // Split or PiP mode
+      } else if (layoutType === 'split-3h') {
+        // 3-way horizontal split: Sub1 | Main | Sub2 (all simultaneous)
+        const sub1Label = `seg${segIdx}_sub1`
         const mainLabel = `seg${segIdx}_main`
-        const subLabel = `seg${segIdx}_sub`
+        const sub2Label = `seg${segIdx}_sub2`
 
-        if (mainClip) {
-          videoFilters.push(buildClipFilter(mainClip, mainInPoint, mainTargetWidth, mainTargetHeight, mainLabel))
-          videoFilters.push(buildAudioFilter(mainClip, mainInPoint, `${mainLabel}_a`))
+        // Process sub1 (subEntries[0]) - left
+        if (subEntries.length > 0) {
+          const entry = subEntries[0]
+          videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, duration, subTargetWidth, subTargetHeight, sub1Label, subFitMode))
+          audioFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, duration, `${sub1Label}_a`))
+        } else {
+          videoFilters.push(`color=c=black:s=${subTargetWidth}x${subTargetHeight}:d=${duration}[${sub1Label}]`)
+          audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${sub1Label}_a]`)
+        }
+
+        // Process main (mainEntries[0]) - center
+        if (mainEntries.length > 0) {
+          const entry = mainEntries[0]
+          videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, duration, mainTargetWidth, mainTargetHeight, mainLabel, mainFitMode))
+          audioFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, duration, `${mainLabel}_a`))
         } else {
           videoFilters.push(`color=c=black:s=${mainTargetWidth}x${mainTargetHeight}:d=${duration}[${mainLabel}]`)
-          videoFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${mainLabel}_a]`)
+          audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${mainLabel}_a]`)
+        }
+
+        // Process sub2 (subEntries[1]) - right
+        if (subEntries.length > 1) {
+          const entry = subEntries[1]
+          videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, duration, subTargetWidth, subTargetHeight, sub2Label, subFitMode))
+          audioFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, duration, `${sub2Label}_a`))
+        } else {
+          videoFilters.push(`color=c=black:s=${subTargetWidth}x${subTargetHeight}:d=${duration}[${sub2Label}]`)
+          audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${sub2Label}_a]`)
+        }
+
+        // Stack all three horizontally: Sub1 | Main | Sub2
+        videoFilters.push(`[${sub1Label}][${mainLabel}][${sub2Label}]hstack=inputs=3[${segVideoLabel}]`)
+
+        // Mix audio from all three sources
+        // For split-3h, main is center, sub1+sub2 are sides
+        // Always mix all three streams to avoid dangling filter outputs
+        audioFilters.push(
+          `[${sub1Label}_a]volume=${segSubFinalVol * 0.5}[${sub1Label}_avol]`,
+          `[${mainLabel}_a]volume=${segMainFinalVol}[${mainLabel}_avol]`,
+          `[${sub2Label}_a]volume=${segSubFinalVol * 0.5}[${sub2Label}_avol]`,
+          `[${sub1Label}_avol][${mainLabel}_avol][${sub2Label}_avol]amix=inputs=3:duration=first:normalize=0[${segAudioLabel}]`
+        )
+      } else {
+        // Split or PiP mode
+        const mainBaseLabel = `seg${segIdx}_main_base`
+        const mainLabel = `seg${segIdx}_main`
+        const subBaseLabel = `seg${segIdx}_sub_base`
+        const subLabel = `seg${segIdx}_sub`
+
+        // Process main entries - concatenate multiple main clips into one stream
+        if (mainEntries.length > 0) {
+          const mainTargetLabel = seg.mainImageOverlay ? mainBaseLabel : mainLabel
+
+          if (mainEntries.length === 1) {
+            // Single main entry - no concatenation needed
+            const entry = mainEntries[0]
+            videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, mainTargetWidth, mainTargetHeight, mainTargetLabel, mainFitMode))
+            audioFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, `${mainLabel}_a`))
+          } else {
+            // Multiple main entries - need to concatenate
+            const mainVideoLabels: string[] = []
+            const mainAudioLabels: string[] = []
+
+            mainEntries.forEach((entry, entryIdx) => {
+              const entryVideoLabel = `seg${segIdx}_mainv${entryIdx}`
+              const entryAudioLabel = `seg${segIdx}_maina${entryIdx}`
+
+              videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, mainTargetWidth, mainTargetHeight, entryVideoLabel, mainFitMode))
+              audioFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, entryAudioLabel))
+
+              mainVideoLabels.push(`[${entryVideoLabel}]`)
+              mainAudioLabels.push(`[${entryAudioLabel}]`)
+            })
+
+            // Concatenate all main entries into one stream
+            videoFilters.push(`${mainVideoLabels.join('')}concat=n=${mainEntries.length}:v=1:a=0[${mainTargetLabel}]`)
+            audioFilters.push(`${mainAudioLabels.join('')}concat=n=${mainEntries.length}:v=0:a=1[${mainLabel}_a]`)
+          }
+
+          // Apply main image overlay if exists
+          if (seg.mainImageOverlay) {
+            applyImageOverlay(seg.mainImageOverlay, mainBaseLabel, mainLabel, `seg${segIdx}_main_img`, mainTargetWidth, mainTargetHeight)
+          }
+        } else {
+          // No main entries - black frame with silence
+          const mainTargetLabel = seg.mainImageOverlay ? mainBaseLabel : mainLabel
+          videoFilters.push(`color=c=black:s=${mainTargetWidth}x${mainTargetHeight}:d=${duration}[${mainTargetLabel}]`)
+          audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${mainLabel}_a]`)
+          // Apply main image overlay if exists (on black background)
+          if (seg.mainImageOverlay) {
+            applyImageOverlay(seg.mainImageOverlay, mainBaseLabel, mainLabel, `seg${segIdx}_main_img`, mainTargetWidth, mainTargetHeight)
+          }
         }
 
         // Process sub entries - concatenate multiple sub clips into one stream
         if (subEntries.length > 0) {
+          const subTargetLabel = seg.subImageOverlay ? subBaseLabel : subLabel
+
           if (subEntries.length === 1) {
             // Single sub entry - no concatenation needed
             const entry = subEntries[0]
-            videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, subTargetWidth, subTargetHeight, subLabel))
-            videoFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, `${subLabel}_a`))
+            videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, subTargetWidth, subTargetHeight, subTargetLabel, subFitMode))
+            audioFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, `${subLabel}_a`))
           } else {
             // Multiple sub entries - need to concatenate
             const subVideoLabels: string[] = []
@@ -666,24 +1003,34 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
               const entryVideoLabel = `seg${segIdx}_sub${entryIdx}`
               const entryAudioLabel = `seg${segIdx}_sub${entryIdx}_a`
 
-              videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, subTargetWidth, subTargetHeight, entryVideoLabel))
-              videoFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, entryAudioLabel))
+              videoFilters.push(buildClipFilterWithDuration(entry.clip, entry.inPoint, entry.duration, subTargetWidth, subTargetHeight, entryVideoLabel, subFitMode))
+              audioFilters.push(buildAudioFilterWithDuration(entry.clip, entry.inPoint, entry.duration, entryAudioLabel))
 
               subVideoLabels.push(`[${entryVideoLabel}]`)
               subAudioLabels.push(`[${entryAudioLabel}]`)
             })
 
             // Concatenate all sub entries into one stream
-            videoFilters.push(`${subVideoLabels.join('')}concat=n=${subEntries.length}:v=1:a=0[${subLabel}]`)
+            videoFilters.push(`${subVideoLabels.join('')}concat=n=${subEntries.length}:v=1:a=0[${subTargetLabel}]`)
             audioFilters.push(`${subAudioLabels.join('')}concat=n=${subEntries.length}:v=0:a=1[${subLabel}_a]`)
+          }
+
+          // Apply sub image overlay if exists
+          if (seg.subImageOverlay) {
+            applyImageOverlay(seg.subImageOverlay, subBaseLabel, subLabel, `seg${segIdx}_sub_img`, subTargetWidth, subTargetHeight)
           }
         } else {
           // No sub entries - black frame with silence
-          videoFilters.push(`color=c=black:s=${subTargetWidth}x${subTargetHeight}:d=${duration}[${subLabel}]`)
-          videoFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${subLabel}_a]`)
+          const subTargetLabel = seg.subImageOverlay ? subBaseLabel : subLabel
+          videoFilters.push(`color=c=black:s=${subTargetWidth}x${subTargetHeight}:d=${duration}[${subTargetLabel}]`)
+          audioFilters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${duration}[${subLabel}_a]`)
+          // Apply sub image overlay if exists (on black background)
+          if (seg.subImageOverlay) {
+            applyImageOverlay(seg.subImageOverlay, subBaseLabel, subLabel, `seg${segIdx}_sub_img`, subTargetWidth, subTargetHeight)
+          }
         }
 
-        // Compose the two clips
+        // Compose the two clips (both now have their overlays applied)
         if (layoutType === 'pip') {
           // PiP: overlay sub on main with margin
           const pipMargin = 40
@@ -712,16 +1059,18 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
         }
 
         // Mix audio for this segment
-        if (audioBalance === 0) {
-          audioFilters.push(`[${mainLabel}_a]volume=${mainVolume}[${segAudioLabel}]`)
-        } else if (audioBalance === 100) {
-          audioFilters.push(`[${subLabel}_a]volume=${subVolume}[${segAudioLabel}]`)
-        } else {
+        // When sub entries exist, we MUST use [subLabel_a] to avoid dangling filter outputs
+        // Always mix both streams with appropriate volumes
+        if (subEntries.length > 0) {
+          // Sub audio filter was created, must include it in the mix
           audioFilters.push(
-            `[${mainLabel}_a]volume=${mainFinalVol}[${mainLabel}_avol]`,
-            `[${subLabel}_a]volume=${subFinalVol}[${subLabel}_avol]`,
-            `[${mainLabel}_avol][${subLabel}_avol]amix=inputs=2:duration=shortest:normalize=0[${segAudioLabel}]`
+            `[${mainLabel}_a]volume=${segMainFinalVol}[${mainLabel}_avol]`,
+            `[${subLabel}_a]volume=${segSubFinalVol}[${subLabel}_avol]`,
+            `[${mainLabel}_avol][${subLabel}_avol]amix=inputs=2:duration=first:normalize=0[${segAudioLabel}]`
           )
+        } else {
+          // No sub entries, just use main audio
+          audioFilters.push(`[${mainLabel}_a]volume=${segMainVolume}[${segAudioLabel}]`)
         }
       }
 
@@ -785,6 +1134,9 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
       if (bgm?.filePath && idx === bgmInputIdx) {
         // BGM input with infinite loop
         exportCommand!.input(filePath).inputOptions(['-stream_loop', '-1'])
+      } else if (imageInputIndices.has(idx)) {
+        // Image input with loop and framerate
+        exportCommand!.input(filePath).inputOptions(['-loop', '1', '-framerate', '25'])
       } else {
         exportCommand!.input(filePath)
       }
@@ -819,8 +1171,11 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
       .on('error', (err, stdout, stderr) => {
         console.error('Export error:', err)
         console.error('FFmpeg stderr:', stderr)
+        console.error('Filter complex was:', filterComplex)
         exportCommand = null
-        reject(err)
+        // Include more details in the error including filter_complex for debugging
+        const detailedError = new Error(`${err.message}\n\nFFmpeg stderr:\n${stderr}\n\nFilter complex:\n${filterComplex}`)
+        reject(detailedError)
       })
 
     exportCommand.run()
@@ -832,4 +1187,35 @@ ipcMain.on('export:cancel', () => {
     exportCommand.kill('SIGKILL')
     exportCommand = null
   }
+})
+
+// Project save/load handlers
+ipcMain.handle('dialog:saveProject', async () => {
+  const result = await dialog.showSaveDialog(mainWindow!, {
+    defaultPath: `project_${formatDateTime()}.veproj`,
+    filters: [
+      { name: 'Video Editor Project', extensions: ['veproj'] }
+    ]
+  })
+  return result.filePath || null
+})
+
+ipcMain.handle('dialog:openProject', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Video Editor Project', extensions: ['veproj'] }
+    ]
+  })
+  return result.filePaths[0] || null
+})
+
+ipcMain.handle('project:save', async (_event, filePath: string, data: unknown) => {
+  const jsonStr = JSON.stringify(data, null, 2)
+  fs.writeFileSync(filePath, jsonStr, 'utf-8')
+})
+
+ipcMain.handle('project:load', async (_event, filePath: string) => {
+  const jsonStr = fs.readFileSync(filePath, 'utf-8')
+  return JSON.parse(jsonStr)
 })
