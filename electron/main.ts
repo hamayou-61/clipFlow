@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, protocol, Menu } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import fsPromises from 'fs/promises'
 import { fileURLToPath } from 'url'
 import { createRequire } from 'module'
 import ffmpeg from 'fluent-ffmpeg'
@@ -505,6 +506,33 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
   if (segments.length === 0) {
     throw new Error('At least one segment is required')
   }
+
+  // Collect all input file paths to check for conflicts with output
+  const allInputPaths = new Set<string>()
+  for (const seg of segments) {
+    for (const entry of seg.mainEntries) {
+      allInputPaths.add(path.normalize(entry.clip.filePath))
+    }
+    for (const entry of seg.subEntries) {
+      allInputPaths.add(path.normalize(entry.clip.filePath))
+    }
+    if (seg.mainImageOverlay) {
+      allInputPaths.add(path.normalize(seg.mainImageOverlay.filePath))
+    }
+    if (seg.subImageOverlay) {
+      allInputPaths.add(path.normalize(seg.subImageOverlay.filePath))
+    }
+  }
+
+  // Check if output path conflicts with any input file
+  const normalizedOutputPath = path.normalize(outputPath)
+  const outputConflictsWithInput = allInputPaths.has(normalizedOutputPath)
+
+  // If conflict, use a temp file and rename after completion
+  const tempOutputPath = outputConflictsWithInput
+    ? path.join(path.dirname(outputPath), `_temp_export_${Date.now()}${path.extname(outputPath)}`)
+    : outputPath
+  const actualOutputPath = tempOutputPath
 
   // Calculate dimensions based on aspect ratio
   const isVertical = aspectRatio === '9:16'
@@ -1128,6 +1156,8 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
     console.log('Filter complex:', filterComplex)
 
     exportCommand = ffmpeg()
+      .addOption('-filter_threads', '4')
+      .addOption('-filter_complex_threads', '4')
 
     // Add all input files
     inputFiles.forEach((filePath, idx) => {
@@ -1149,11 +1179,13 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
       .addOption('-c:v', 'libx264')
       .addOption('-preset', 'fast')
       .addOption('-crf', '23')
+      .addOption('-threads', '8')
       .addOption('-c:a', 'aac')
       .addOption('-b:a', '192k')
+      .addOption('-max_muxing_queue_size', '2048')
       .addOption('-t', String(outputDuration))
       .addOption('-y')
-      .output(outputPath)
+      .output(actualOutputPath)
       .on('start', (cmd) => {
         console.log('FFmpeg command:', cmd)
       })
@@ -1163,9 +1195,22 @@ ipcMain.handle('video:export', async (event, config: ExportConfig) => {
           mainWindow.webContents.send('export:progress', progress.percent || 0)
         }
       })
-      .on('end', () => {
+      .on('end', async () => {
         console.log('Export completed')
         exportCommand = null
+        // If we used a temp file due to input/output conflict, rename it to the final output
+        if (outputConflictsWithInput) {
+          try {
+            // Remove the original file first (it was used as input)
+            await fsPromises.unlink(outputPath)
+            // Rename temp file to final output path
+            await fsPromises.rename(actualOutputPath, outputPath)
+            console.log('Renamed temp file to final output path')
+          } catch (renameErr) {
+            reject(new Error(`Export succeeded but failed to rename output file: ${renameErr}`))
+            return
+          }
+        }
         resolve()
       })
       .on('error', (err, stdout, stderr) => {
