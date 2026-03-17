@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, DragEvent, useState, useEffect } from 'react'
+import React, { useCallback, useRef, DragEvent, useState, useEffect, ReactNode } from 'react'
 import { formatTime } from '../utils/format'
 import type { Clip, SubEntry, VideoFitMode } from '../types'
 import type { PanelId } from '../store/useEditorStore'
@@ -28,6 +28,8 @@ interface SubClipListProps {
   onVolumeChange?: (volume: number) => void
   fitMode?: VideoFitMode
   onFitModeChange?: (mode: VideoFitMode) => void
+  // Editor render prop - renders editor below selected entry
+  renderEditor?: (clip: Clip) => ReactNode
 }
 
 export function SubClipList({
@@ -54,6 +56,7 @@ export function SubClipList({
   onVolumeChange,
   fitMode,
   onFitModeChange,
+  renderEditor,
 }: SubClipListProps) {
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
@@ -205,19 +208,15 @@ export function SubClipList({
     <div
       className={`relative p-3 transition-colors ${
         isEditing
-          ? 'border-2 border-gray-400 bg-editor-bg rounded-t-lg border-b-0 z-10'
+          ? 'border-2 border-gray-400 bg-editor-bg rounded-lg'
           : isDragOver
             ? 'border-2 border-editor-accent bg-editor-accent/10 rounded-lg'
-            : 'border border-b-0 border-editor-border bg-editor-bg rounded-t-lg'
+            : 'border border-editor-border bg-editor-bg rounded-lg'
       }`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={handleContainerDrop}
     >
-      {/* Border mask - covers the top border of editor area below */}
-      {isEditing && (
-        <div className="absolute left-0 right-0 -bottom-[2px] h-[2px] bg-editor-bg" />
-      )}
       {/* Header with label and controls */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
@@ -278,10 +277,12 @@ export function SubClipList({
             // Percentage of clip duration being used (entry.duration / clip's full duration)
             const durationPercent = clip.duration > 0 ? (entry.duration / clip.duration) * 100 : 0
 
+            const isSelected = selectedEntryIndex === index
+
             return (
               <div
                 key={`${entry.clipId}-${index}`}
-                draggable
+                draggable={!isSelected}
                 onDragStart={(e) => handleReorderDragStart(e, index)}
                 onDragOver={(e) => handleReorderDragOver(e, index)}
                 onDragLeave={handleReorderDragLeave}
@@ -292,12 +293,12 @@ export function SubClipList({
                 } ${dragOverIndex === index ? 'border-t-2 border-editor-accent' : ''}`}
               >
                 <div
-                  className={`flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
-                    selectedEntryIndex !== null && selectedEntryIndex === index
-                      ? 'bg-white/10 ring-1 ring-editor-accent'
-                      : 'bg-editor-surface hover:bg-editor-border'
+                  className={`flex items-center gap-2 p-2 rounded-t cursor-pointer transition-colors ${
+                    isSelected
+                      ? 'bg-white/10 ring-1 ring-editor-accent rounded-b-none'
+                      : 'bg-editor-surface hover:bg-editor-border rounded'
                   }`}
-                  onClick={() => onSelectEntry(selectedEntryIndex !== null && selectedEntryIndex === index ? null : index)}
+                  onClick={() => onSelectEntry(isSelected ? null : index)}
                 >
                   {/* Drag handle */}
                   <div className="cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-300">
@@ -349,6 +350,13 @@ export function SubClipList({
                     </svg>
                   </button>
                 </div>
+
+                {/* Editor section - rendered directly below selected entry */}
+                {isSelected && renderEditor && (
+                  <div className="bg-editor-bg border border-t-0 border-editor-border rounded-b p-3 ring-1 ring-editor-accent ring-t-0">
+                    {renderEditor(clip)}
+                  </div>
+                )}
               </div>
             )
           })}

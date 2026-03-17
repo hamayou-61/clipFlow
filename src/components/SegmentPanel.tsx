@@ -281,6 +281,133 @@ export function SegmentPanel() {
 
   const currentSegmentDuration = selectedSegment ? getSegmentDuration(selectedSegment) : 0
 
+  // Render editor function to be passed to ClipLists
+  const renderMainEditor = useCallback((clip: typeof selectedClip) => {
+    if (!clip) return null
+    return (
+      <>
+        <div className="flex border-b border-editor-border mb-4">
+          <button
+            onClick={() => setEditMode('trim')}
+            className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+              editMode === 'trim' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            再生区間
+          </button>
+          <button
+            onClick={() => setEditMode('crop')}
+            className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+              editMode === 'crop' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            表示範囲
+          </button>
+          <button
+            onClick={() => setEditMode('image')}
+            className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+              editMode === 'image' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            画像
+          </button>
+        </div>
+
+        {editMode === 'trim' && (
+          <TrimEditor
+            clip={clip}
+            laneId="main"
+            constraint={null}
+            onUpdateClip={updateClip}
+          />
+        )}
+
+        {editMode === 'crop' && (
+          <CropEditor
+            clip={clip}
+            laneId="main"
+            layoutType={clipLayoutType}
+            isVertical={isVertical}
+            onUpdateClip={updateClip}
+          />
+        )}
+
+        {editMode === 'image' && selectedSegment && (
+          <ImageOverlaySettings
+            label="メイン画像"
+            overlay={selectedSegment.mainImageOverlay}
+            onUpdate={(overlay) => {
+              updateSegment(selectedSegment.id, { mainImageOverlay: overlay })
+            }}
+          />
+        )}
+      </>
+    )
+  }, [editMode, clipLayoutType, isVertical, selectedSegment, updateClip, updateSegment])
+
+  const renderSubEditor = useCallback((clip: typeof selectedClip) => {
+    if (!clip) return null
+    return (
+      <>
+        <div className="flex border-b border-editor-border mb-4">
+          <button
+            onClick={() => setEditMode('trim')}
+            className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+              editMode === 'trim' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            再生区間
+          </button>
+          <button
+            onClick={() => setEditMode('crop')}
+            className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+              editMode === 'crop' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            表示範囲
+          </button>
+          <button
+            onClick={() => setEditMode('image')}
+            className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+              editMode === 'image' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            画像
+          </button>
+        </div>
+
+        {editMode === 'trim' && (
+          <TrimEditor
+            clip={clip}
+            laneId="sub"
+            constraint={null}
+            onUpdateClip={updateClip}
+          />
+        )}
+
+        {editMode === 'crop' && (
+          <CropEditor
+            clip={clip}
+            laneId="sub"
+            layoutType={clipLayoutType}
+            isVertical={isVertical}
+            onUpdateClip={updateClip}
+          />
+        )}
+
+        {editMode === 'image' && selectedSegment && (
+          <ImageOverlaySettings
+            label="サブ画像"
+            overlay={selectedSegment.subImageOverlay}
+            onUpdate={(overlay) => {
+              updateSegment(selectedSegment.id, { subImageOverlay: overlay })
+            }}
+          />
+        )}
+      </>
+    )
+  }, [editMode, clipLayoutType, isVertical, selectedSegment, updateClip, updateSegment])
+
   return (
     <div className="bg-editor-surface border-t border-editor-border">
       {/* Segment Tabs */}
@@ -477,7 +604,7 @@ export function SegmentPanel() {
           </div>
 
           {/* Clip Lists */}
-          <div className={`grid gap-4 ${selectedClip ? '' : 'mb-4'} ${selectedSegment.layoutType === 'single-main' ? 'grid-cols-1' : selectedSegment.layoutType === 'split-3h' ? 'grid-cols-3' : 'grid-cols-2'}`}>
+          <div className={`grid gap-4 items-start ${selectedClip ? '' : 'mb-4'} ${selectedSegment.layoutType === 'single-main' ? 'grid-cols-1' : selectedSegment.layoutType === 'split-3h' ? 'grid-cols-3' : 'grid-cols-2'}`}>
             {/* Sub1 for split-3h (left) */}
             {selectedSegment.layoutType === 'split-3h' && (
               <SubClipList
@@ -523,6 +650,7 @@ export function SegmentPanel() {
                 onVolumeChange={(volume) => updateSegment(selectedSegment.id, { subVolume: volume })}
                 fitMode={selectedSegment.subFitMode ?? 'cover'}
                 onFitModeChange={(mode) => updateSegment(selectedSegment.id, { subFitMode: mode })}
+                renderEditor={renderSubEditor}
               />
             )}
 
@@ -567,6 +695,7 @@ export function SegmentPanel() {
               onVolumeChange={(volume) => updateSegment(selectedSegment.id, { mainVolume: volume })}
               fitMode={selectedSegment.mainFitMode ?? 'cover'}
               onFitModeChange={(mode) => updateSegment(selectedSegment.id, { mainFitMode: mode })}
+              renderEditor={renderMainEditor}
             />
 
             {/* Sub2 for split-3h (right) */}
@@ -610,6 +739,7 @@ export function SegmentPanel() {
                 isDragOver={dragOverLane === 'sub'}
                 onCrossDrop={handleCrossDrop('sub2')}
                 isEditing={selectedLaneId === 'sub' && selectedSubEntryIndex === 1 && selectedClip !== null}
+                renderEditor={renderSubEditor}
               />
             )}
 
@@ -655,85 +785,11 @@ export function SegmentPanel() {
                 onVolumeChange={(volume) => updateSegment(selectedSegment.id, { subVolume: volume })}
                 fitMode={selectedSegment.subFitMode ?? 'cover'}
                 onFitModeChange={(mode) => updateSegment(selectedSegment.id, { subFitMode: mode })}
+                renderEditor={renderSubEditor}
               />
             )}
           </div>
 
-          {/* Clip Editor (Trim/Crop/Image) */}
-          <div className={`pt-4 ${
-            selectedClip
-              ? 'border-2 border-gray-400 rounded-b-lg p-3'
-              : 'border-t border-editor-border'
-          }`}>
-            <div className="flex border-b border-editor-border mb-4">
-              <button
-                onClick={() => setEditMode('trim')}
-                disabled={!selectedClip}
-                className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
-                  editMode === 'trim' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed'
-                }`}
-              >
-                再生区間
-              </button>
-              <button
-                onClick={() => setEditMode('crop')}
-                disabled={!selectedClip}
-                className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
-                  editMode === 'crop' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed'
-                }`}
-              >
-                表示範囲
-              </button>
-              <button
-                onClick={() => setEditMode('image')}
-                className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
-                  editMode === 'image' ? 'border-editor-accent text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                画像
-              </button>
-            </div>
-
-            {editMode === 'trim' && selectedClip && selectedLaneId && (
-              <TrimEditor
-                clip={selectedClip}
-                laneId={selectedLaneId}
-                constraint={null}
-                onUpdateClip={updateClip}
-              />
-            )}
-
-            {editMode === 'crop' && selectedClip && selectedLaneId && (
-              <CropEditor
-                clip={selectedClip}
-                laneId={selectedLaneId}
-                layoutType={clipLayoutType}
-                isVertical={isVertical}
-                onUpdateClip={updateClip}
-              />
-            )}
-
-            {editMode === 'image' && (
-              <div className={`grid gap-4 ${selectedSegment.layoutType === 'single-main' ? 'grid-cols-1' : 'grid-cols-2'}`}>
-                <ImageOverlaySettings
-                  label="メイン画像"
-                  overlay={selectedSegment.mainImageOverlay}
-                  onUpdate={(overlay) => {
-                    updateSegment(selectedSegment.id, { mainImageOverlay: overlay })
-                  }}
-                />
-                {selectedSegment.layoutType !== 'single-main' && (
-                  <ImageOverlaySettings
-                    label="サブ画像"
-                    overlay={selectedSegment.subImageOverlay}
-                    onUpdate={(overlay) => {
-                      updateSegment(selectedSegment.id, { subImageOverlay: overlay })
-                    }}
-                  />
-                )}
-              </div>
-            )}
-          </div>
         </div>
       ) : (
         <div
