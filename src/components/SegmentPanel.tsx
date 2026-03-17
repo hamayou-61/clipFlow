@@ -62,35 +62,6 @@ export function SegmentPanel() {
     return lane.clips.find((c) => c.id === selectedClipId) || null
   }, [selectedClipId, selectedLaneId, mainLane, subLane])
 
-  // Check if main clip has fixed duration (based on entry)
-  const mainClipConstraint = useMemo(() => {
-    if (!selectedClipId || selectedLaneId !== 'main') return null
-    const segment = segments.find((seg) =>
-      seg.mainEntries.some(e => e.clipId === selectedClipId)
-    )
-    if (!segment) return null
-
-    const mainEntry = segment.mainEntries.find(e => e.clipId === selectedClipId)
-    if (!mainEntry) return null
-
-    return { entryDuration: mainEntry.duration, layoutType: segment.layoutType }
-  }, [selectedClipId, selectedLaneId, segments])
-
-  // Check if sub clip has fixed duration (split layout)
-  const subClipConstraint = useMemo(() => {
-    if (!selectedClipId || selectedLaneId !== 'sub') return null
-    const segment = segments.find((seg) =>
-      seg.subEntries.some(e => e.clipId === selectedClipId)
-    )
-    if (!segment) return null
-    if (segment.layoutType !== 'split-h' && segment.layoutType !== 'split-v' && segment.layoutType !== 'split-3h' && segment.layoutType !== 'pip') return null
-
-    const subEntry = segment.subEntries.find(e => e.clipId === selectedClipId)
-    if (!subEntry) return null
-
-    return { entryDuration: subEntry.duration, layoutType: segment.layoutType }
-  }, [selectedClipId, selectedLaneId, segments])
-
   // Get clip layout type for crop
   const clipLayoutType = useMemo((): LayoutType => {
     if (!selectedClipId || !selectedLaneId) return 'single-main'
@@ -136,24 +107,6 @@ export function SegmentPanel() {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showTelopPopover])
-
-  // Auto-sync main clip outPoint based on entry duration
-  useEffect(() => {
-    if (!selectedClip || !selectedLaneId || selectedLaneId !== 'main' || !mainClipConstraint) return
-    const expectedOut = selectedClip.inPoint + mainClipConstraint.entryDuration
-    if (Math.abs(selectedClip.outPoint - expectedOut) > 0.01 && expectedOut <= selectedClip.duration) {
-      updateClip(selectedLaneId, selectedClip.id, { outPoint: expectedOut })
-    }
-  }, [selectedClip, selectedLaneId, mainClipConstraint, updateClip])
-
-  // Auto-sync sub clip outPoint when used in split layout
-  useEffect(() => {
-    if (!selectedClip || !selectedLaneId || selectedLaneId !== 'sub' || !subClipConstraint) return
-    const expectedOut = selectedClip.inPoint + subClipConstraint.entryDuration
-    if (Math.abs(selectedClip.outPoint - expectedOut) > 0.01 && expectedOut <= selectedClip.duration) {
-      updateClip(selectedLaneId, selectedClip.id, { outPoint: expectedOut })
-    }
-  }, [selectedClip, selectedLaneId, subClipConstraint, updateClip])
 
   // Add multiple clips to lane and assign to segment
   const addClipsToLane = useCallback(
@@ -327,7 +280,6 @@ export function SegmentPanel() {
   )
 
   const currentSegmentDuration = selectedSegment ? getSegmentDuration(selectedSegment) : 0
-  const clipConstraint = selectedLaneId === 'main' ? mainClipConstraint : subClipConstraint
 
   return (
     <div className="bg-editor-surface border-t border-editor-border">
@@ -746,7 +698,7 @@ export function SegmentPanel() {
               <TrimEditor
                 clip={selectedClip}
                 laneId={selectedLaneId}
-                constraint={clipConstraint}
+                constraint={null}
                 onUpdateClip={updateClip}
               />
             )}

@@ -131,14 +131,15 @@ export function MainClipList({
   }
 
   const handleReorderDrop = (e: React.DragEvent, toIndex: number) => {
-    e.preventDefault()
-
     const files = Array.from(e.dataTransfer.files)
     if (files.length > 0) {
+      // Let file drops bubble up to container handler which clears dragOverLane
       setDraggingIndex(null)
       setDragOverIndex(null)
       return
     }
+
+    e.preventDefault()
 
     // Check for cross-panel drop
     const panelData = e.dataTransfer.getData('application/x-panel-entry')

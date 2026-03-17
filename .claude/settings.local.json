@@ -26,7 +26,9 @@
       "Bash(npm test)",
       "Bash(npm run test:*)",
       "Bash(npm run check:*)",
-      "Bash(npm run test:e2e:*)"
+      "Bash(npm run test:e2e:*)",
+      "Bash(npm run typecheck:*)",
+      "Bash(git checkout:*)"
     ]
   }
 }

@@ -137,16 +137,16 @@ export function SubClipList({
   }
 
   const handleReorderDrop = (e: React.DragEvent, toIndex: number) => {
-    e.preventDefault()
-
     // Check if this is a file drop (external) vs internal reorder
     const files = Array.from(e.dataTransfer.files)
     if (files.length > 0) {
-      // File drop - let parent handle it (don't stop propagation)
+      // Let file drops bubble up to container handler which clears dragOverLane
       setDraggingIndex(null)
       setDragOverIndex(null)
       return
     }
+
+    e.preventDefault()
 
     // Check for cross-panel drop
     const panelData = e.dataTransfer.getData('application/x-panel-entry')
